@@ -156,8 +156,9 @@ def main(argv=None):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = config.torch_deterministic
 
-    # Create a dummy environment just to detect action space type
+    # Create environment
     env = make_env(config)
+    envs = make_envs(config)
 
     # Decide whether discrete or continuous
     action_spaces = [space for name, space in env.act_space.items() if name != "reset"]
@@ -166,23 +167,20 @@ def main(argv=None):
     action_space = action_spaces[0]
 
     if action_space.discrete:
-        ppo_script = "ppo"
+        from ppo import Args, main as ppo_main
     else:
-        ppo_script = "ppo_continuous_action"
+        from ppo_continuous_action import Args, main as ppo_main
 
     print(f"[train.py] Detected action space type: {'Discrete' if action_space.discrete else 'Continuous'}")
-    print(f"[train.py] Running script: {ppo_script}.py")
 
-    # Now execute the correct PPO script
-    import subprocess
-    run_command = [
-        sys.executable,  # usually "python"
-        f"thesis/{ppo_script}.py",
-        "--seed", str(seed),
-        "--config", parsed_args.config,
-    ]
-    print("[train.py] Launching subprocess:", " ".join(run_command))
-    subprocess.run(run_command, check=True)
+    # Create PPO args and run training
+    args = Args(
+        seed=seed,
+        config=config,
+        env=envs,
+        env_id=config.task,
+    )
+    ppo_main(args)
 
 if __name__ == "__main__":
     main()

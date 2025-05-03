@@ -66,19 +66,15 @@ gymnasium_bandit5:
   total_timesteps: 50000
   num_envs: 4
   num_steps: 128
-  exp_name: "bandit5_experiment"
-  learning_rate: 2.5e-4
-  anneal_lr: true
-  gamma: 0.99
-  gae_lambda: 0.95
-  num_minibatches: 4
-  update_epochs: 4
-  norm_adv: true
-  clip_coef: 0.2
-  clip_vloss: true
-  ent_coef: 0.01
-  vf_coef: 0.5
-  max_grad_norm: 0.5
-  target_kl: None
-  full_keys: {mlp_keys: '.*', cnn_keys: '.*'}
-  keys: {mlp_keys: '.*', cnn_keys: '.*'}
+  full_keys: {mlp_keys: '\b(target|neighbors|distance|position)\b', cnn_keys: '^$'}
+  keys: {mlp_keys: '\b(target_unprivileged|neighbors_unprivileged|position)\b', cnn_keys: '^$'}
+  exp_name: "bandit5"
+
+gymnasium_lavatrail8:
+  task: gymnasium_LavaTrail8x8-v0
+  total_timesteps: 50000
+  num_envs: 4
+  num_steps: 128
+  full_keys: {mlp_keys: '\b(neighbors|last_action|grid|position)\b', cnn_keys: '^$'}
+  keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|grid_unprivileged|position)\b', cnn_keys: '^$'}
+  exp_name: "lavatrail8"

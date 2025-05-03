@@ -14,6 +14,7 @@ CONFIGS=(
   # "mountaincar_medium"
   # "acrobot_large"
   "gymnasium_bandit5"
+  # "gymnasium_lavatrail8"
 )
 
 NUM_SEEDS=1
