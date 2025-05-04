@@ -30,9 +30,9 @@ class Agent(nn.Module):
         import re
         mlp_keys_pattern = r'.*'  # Default pattern to match all keys
         cnn_keys_pattern = r'.*'  # Default pattern to match all keys
-        if hasattr(envs, 'config') and hasattr(envs.config, 'full_keys'):
-            mlp_keys_pattern = envs.config.full_keys.mlp_keys
-            cnn_keys_pattern = envs.config.full_keys.cnn_keys
+        if hasattr(config, 'full_keys'):
+            mlp_keys_pattern = config.full_keys.mlp_keys
+            cnn_keys_pattern = config.full_keys.cnn_keys
         
         # Filter keys based on the regex patterns and observation shapes
         self.mlp_keys_total = []
@@ -59,7 +59,9 @@ class Agent(nn.Module):
                 size = 1
             self.mlp_key_sizes[key] = size
             self.total_mlp_size += size
-                
+
+        print("MLP keys pattern: ", mlp_keys_pattern)
+        print("CNN keys pattern: ", cnn_keys_pattern)
         print(f"Using MLP keys: {self.mlp_keys}")
         print(f"Using CNN keys: {self.cnn_keys}")
         print(f"Total MLP input size: {self.total_mlp_size}")
@@ -200,7 +202,14 @@ class Agent(nn.Module):
             probs = Categorical(logits=logits)
             if action is None:
                 action = probs.sample()
-            return action, probs.log_prob(action), probs.entropy(), self.critic(latent)
+                # Convert to one-hot for environment
+                one_hot_action = torch.zeros_like(logits)
+                one_hot_action.scatter_(1, action.unsqueeze(1), 1.0)
+                return one_hot_action, probs.log_prob(action), probs.entropy(), self.critic(latent)
+            else:
+                # Convert one-hot action back to indices for log_prob calculation
+                action_indices = action.argmax(dim=1)
+                return action, probs.log_prob(action_indices), probs.entropy(), self.critic(latent)
         else:
             action_mean = self.actor_mean(latent)
             action_logstd = self.actor_logstd.expand_as(action_mean)
@@ -254,7 +263,12 @@ def main(envs, config, seed: int = 0):
         else:  # CNN keys
             obs[key] = torch.zeros((config.num_steps, config.num_envs) + envs.obs_space[key].shape).to(device)
     
-    actions = torch.zeros((config.num_steps, config.num_envs) + envs.act_space['action'].shape).to(device)
+    # Initialize action storage with correct shape for one-hot if discrete
+    if agent.is_discrete:
+        action_shape = (config.num_steps, config.num_envs, envs.act_space['action'].shape[0])
+    else:
+        action_shape = (config.num_steps, config.num_envs) + envs.act_space['action'].shape
+    actions = torch.zeros(action_shape).to(device)
     logprobs = torch.zeros((config.num_steps, config.num_envs)).to(device)
     rewards = torch.zeros((config.num_steps, config.num_envs)).to(device)
     dones = torch.zeros((config.num_steps, config.num_envs)).to(device)
@@ -302,7 +316,12 @@ def main(envs, config, seed: int = 0):
             actions[step] = action
             logprobs[step] = logprob
 
-            action_np = action.cpu().numpy()            
+            # Convert action to numpy for environment
+            action_np = action.cpu().numpy()
+            if agent.is_discrete:
+                # For discrete actions, we already have one-hot encoding
+                action_np = action_np.reshape(num_envs, -1)
+            
             acts = {
                 'action': action_np,
                 'reset': next_done.cpu().numpy()
