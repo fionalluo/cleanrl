@@ -35,19 +35,19 @@ class Agent(nn.Module):
             cnn_keys_pattern = envs.config.full_keys.cnn_keys
         
         # Filter keys based on the regex patterns and observation shapes
-        self.mlp_keys = []
-        self.cnn_keys = []
+        self.mlp_keys_total = []
+        self.cnn_keys_total = []
         for k in obs_space.keys():
             if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
                 continue
             if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
-                self.cnn_keys.append(k)
+                self.cnn_keys_total.append(k)
             else:  # Non-image observations
-                self.mlp_keys.append(k)
+                self.mlp_keys_total.append(k)
         
         # MLP and CNN keys that match the regex patterns in the config
-        self.mlp_keys = [k for k in self.mlp_keys if re.match(mlp_keys_pattern, k)]
-        self.cnn_keys = [k for k in self.cnn_keys if re.match(cnn_keys_pattern, k)]
+        self.mlp_keys = [k for k in self.mlp_keys_total if re.match(mlp_keys_pattern, k)]
+        self.cnn_keys = [k for k in self.cnn_keys_total if re.match(cnn_keys_pattern, k)]
         
         # Calculate total input size for MLP
         self.total_mlp_size = 0
@@ -163,10 +163,7 @@ class Agent(nn.Module):
                 if mlp_features:  # Only process if we have any MLP features
                     mlp_features = torch.cat(mlp_features, dim=1)
                     mlp_features = self.mlp_encoder(mlp_features)
-            
-            # print("mlp_features shape: ", mlp_features.shape)
-            # print("cnn_features shape: ", cnn_features.shape)
-            
+                        
             # Handle the case where neither exists
             if cnn_features is None and mlp_features is None:
                 raise ValueError("No valid observations found in input dictionary")
@@ -186,9 +183,7 @@ class Agent(nn.Module):
             if x.dim() > 2:
                 x = x.view(batch_size, -1)
             features = self.mlp_encoder(x)
-        
-        # print("features shape: ", features.shape)
-        
+                
         # Project to final latent space
         latent = self.latent_projector(features)
         return latent
@@ -268,6 +263,11 @@ def main(envs, config, seed: int = 0):
     global_step = 0
     start_time = time.time()
     
+    # Track episode returns and lengths for each environment
+    episode_returns = np.zeros(config.num_envs)
+    episode_lengths = np.zeros(config.num_envs)
+    last_done_global_step = torch.zeros(config.num_envs, dtype=torch.int32).to(device)
+    
     action_shape = envs.act_space['action'].shape
     num_envs = config.num_envs
     
@@ -314,10 +314,39 @@ def main(envs, config, seed: int = 0):
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
             rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(device).view(-1)
 
-            if "episode" in obs_dict:
-                print(f"global_step={global_step}, episodic_return={obs_dict['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", obs_dict["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", obs_dict["episode"]["l"], global_step)
+            # Check for done environments and calculate returns
+            done_envs = torch.where(next_done)[0]
+            for env_idx in done_envs:
+                env_idx = env_idx.item()
+                
+                # Calculate episode length using global steps
+                start_global = last_done_global_step[env_idx] + 1
+                end_global = global_step - config.num_envs + env_idx  # because envs step together
+                episode_steps = (end_global - start_global) // config.num_envs + 1
+                
+                # Figure out which steps to sum
+                reward_steps = []
+                for s in range(config.num_steps):
+                    step_global = global_step - config.num_envs * (config.num_steps - s)
+                    if step_global >= start_global and step_global <= end_global:
+                        reward_steps.append(s)
+                episode_return = rewards[reward_steps, env_idx].sum().item()
+                
+                # Log the episode
+                print(f"global_step={global_step}, episode_return={episode_return}, episode_length={episode_steps}")
+                writer.add_scalar("charts/episode_return", episode_return, global_step)
+                writer.add_scalar("charts/episode_length", episode_steps, global_step)
+                
+                # Log to wandb if tracking is enabled
+                if config.track:
+                    wandb.log({
+                        "charts/episode_return": episode_return,
+                        "charts/episode_length": episode_steps,
+                        "metrics/global_step": global_step,
+                    })
+                
+                # Update tracking
+                last_done_global_step[env_idx] = global_step
 
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -399,7 +428,7 @@ def main(envs, config, seed: int = 0):
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        # Log to TensorBoard
+        # TRY NOT TO MODIFY: Log to TensorBoard
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
