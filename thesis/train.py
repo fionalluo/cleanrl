@@ -7,6 +7,7 @@ import warnings
 import pathlib
 import importlib
 from functools import partial as bind
+from types import SimpleNamespace
 
 warnings.filterwarnings('ignore', '.*box bound precision lowered.*')
 warnings.filterwarnings('ignore', '.*using stateful random seeds*')
@@ -28,6 +29,16 @@ from embodied import wrappers
 # Import unified PPO implementation
 from ppo import main as ppo_main
 
+def dict_to_namespace(d):
+    """Convert a dictionary to a SimpleNamespace recursively."""
+    namespace = SimpleNamespace()
+    for key, value in d.items():
+        if isinstance(value, dict):
+            setattr(namespace, key, dict_to_namespace(value))
+        else:
+            setattr(namespace, key, value)
+    return namespace
+
 # --- Config loading ---
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -41,28 +52,31 @@ def load_config(argv=None):
         (embodied.Path(__file__).parent / 'config.yaml').read())
     
     parsed, other = embodied.Flags(configs=['defaults']).parse_known(argv)
-    config = embodied.Config(configs['defaults'])
+    config_dict = embodied.Config(configs['defaults'])
 
     for name in parsed.configs:
-        config = config.update(configs[name])
-    config = embodied.Flags(config).parse(other)
+        config_dict = config_dict.update(configs[name])
+    config_dict = embodied.Flags(config_dict).parse(other)
+    
+    # Convert to SimpleNamespace
+    config = dict_to_namespace(config_dict)
     print(config)
 
     return config
 
 # --- Environment creation ---
 def make_envs(config):
-    suite, task = config['task'].split('_', 1)
+    suite, task = config.task.split('_', 1)
     ctors = []
-    for index in range(config['num_envs']):
+    for index in range(config.num_envs):
         ctor = lambda: make_env(config)
-        if config.get('envs', {}).get('parallel', 'none') != 'none':
-            ctor = bind(embodied.Parallel, ctor, config['envs']['parallel'])
-        if config.get('envs', {}).get('restart', True):
+        if hasattr(config, 'envs') and hasattr(config.envs, 'parallel') and config.envs.parallel != 'none':
+            ctor = bind(embodied.Parallel, ctor, config.envs.parallel)
+        if hasattr(config, 'envs') and hasattr(config.envs, 'restart') and config.envs.restart:
             ctor = bind(wrappers.RestartOnException, ctor)
         ctors.append(ctor)
     envs = [ctor() for ctor in ctors]
-    return embodied.BatchEnv(envs, parallel=(config.get('envs', {}).get('parallel', 'none') != 'none'))
+    return embodied.BatchEnv(envs, parallel=(hasattr(config, 'envs') and hasattr(config.envs, 'parallel') and config.envs.parallel != 'none'))
 
 def make_env(config, **overrides):
     suite, task = config.task.split('_', 1)
@@ -87,7 +101,7 @@ def make_env(config, **overrides):
         module, cls = ctor.split(':')
         module = importlib.import_module(module)
         ctor = getattr(module, cls)
-    kwargs = config.env.get(suite, {})
+    kwargs = getattr(config.env, suite, {})
     kwargs.update(overrides)
     if suite == 'robopianist':
         kwargs.update({
@@ -103,22 +117,22 @@ def make_env(config, **overrides):
     return wrap_env(env, config)
 
 def wrap_env(env, config):
-    args = config.get('wrapper', {})
+    args = getattr(config, 'wrapper', {})
     for name, space in env.act_space.items():
         if name == 'reset':
             continue
         elif space.discrete:
             env = wrappers.OneHotAction(env, name)
-        elif args.get('discretize', 0):
-            env = wrappers.DiscretizeAction(env, name, args['discretize'])
+        elif hasattr(args, 'discretize') and args.discretize:
+            env = wrappers.DiscretizeAction(env, name, args.discretize)
         else:
             env = wrappers.NormalizeAction(env, name)
 
     env = wrappers.ExpandScalars(env)
 
-    if args.get('length', 0):
-        env = wrappers.TimeLimit(env, args['length'], args.get('reset', True))
-    if args.get('checks', False):
+    if hasattr(args, 'length') and args.length:
+        env = wrappers.TimeLimit(env, args.length, getattr(args, 'reset', True))
+    if hasattr(args, 'checks') and args.checks:
         env = wrappers.CheckSpaces(env)
 
     for name, space in env.act_space.items():

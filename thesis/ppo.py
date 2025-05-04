@@ -30,9 +30,9 @@ class Agent(nn.Module):
         import re
         mlp_keys_pattern = r'.*'  # Default pattern to match all keys
         cnn_keys_pattern = r'.*'  # Default pattern to match all keys
-        if hasattr(envs, 'config') and 'full_keys' in envs.config:
-            mlp_keys_pattern = envs.config['full_keys']['mlp_keys']
-            cnn_keys_pattern = envs.config['full_keys']['cnn_keys']
+        if hasattr(envs, 'config') and hasattr(envs.config, 'full_keys'):
+            mlp_keys_pattern = envs.config.full_keys.mlp_keys
+            cnn_keys_pattern = envs.config.full_keys.cnn_keys
         
         # Filter keys based on the regex patterns and observation shapes
         self.mlp_keys = []
@@ -71,7 +71,7 @@ class Agent(nn.Module):
                 blocks=2,  # Number of residual blocks per stage
                 resize='stride',  # Resize method
                 minres=4,  # Minimum resolution
-                output_dim=config['cnn_output_dim']  # Fixed output dimension
+                output_dim=config.cnn_output_dim  # Fixed output dimension
             )
         else:
             self.cnn_encoder = None
@@ -79,9 +79,9 @@ class Agent(nn.Module):
         # MLP encoder for non-image observations
         if self.mlp_keys:
             self.mlp_encoder = nn.Sequential(
-                layer_init(nn.Linear(self.total_mlp_size, config['mlp_hidden_dim'])),
+                layer_init(nn.Linear(self.total_mlp_size, config.mlp_hidden_dim)),
                 nn.Tanh(),
-                layer_init(nn.Linear(config['mlp_hidden_dim'], config['mlp_output_dim'])),
+                layer_init(nn.Linear(config.mlp_hidden_dim, config.mlp_output_dim)),
                 nn.Tanh(),
             )
         else:
@@ -90,15 +90,15 @@ class Agent(nn.Module):
         # Calculate total input dimension for latent projector
         total_input_dim = 0
         if self.cnn_encoder is not None:
-            total_input_dim += len(self.cnn_keys) * config['cnn_output_dim']
+            total_input_dim += len(self.cnn_keys) * config.cnn_output_dim
         if self.mlp_encoder is not None:
-            total_input_dim += config['mlp_output_dim']
+            total_input_dim += config.mlp_output_dim
         
         # Project concatenated features to latent space
         self.latent_projector = nn.Sequential(
-            layer_init(nn.Linear(total_input_dim, config['latent_dim'])),
+            layer_init(nn.Linear(total_input_dim, config.latent_dim)),
             nn.Tanh(),
-            layer_init(nn.Linear(config['latent_dim'], config['latent_dim'])),
+            layer_init(nn.Linear(config.latent_dim, config.latent_dim)),
             nn.Tanh(),
         )
         
@@ -107,23 +107,23 @@ class Agent(nn.Module):
         
         # Actor and critic networks operating on latent space
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(config['latent_dim'], config['latent_dim'] // 2)),
+            layer_init(nn.Linear(config.latent_dim, config.latent_dim // 2)),
             nn.Tanh(),
-            layer_init(nn.Linear(config['latent_dim'] // 2, 1), std=1.0),
+            layer_init(nn.Linear(config.latent_dim // 2, 1), std=1.0),
         )
         
         if self.is_discrete:
             self.actor = nn.Sequential(
-                layer_init(nn.Linear(config['latent_dim'], config['latent_dim'] // 2)),
+                layer_init(nn.Linear(config.latent_dim, config.latent_dim // 2)),
                 nn.Tanh(),
-                layer_init(nn.Linear(config['latent_dim'] // 2, envs.act_space['action'].shape[0]), std=0.01),
+                layer_init(nn.Linear(config.latent_dim // 2, envs.act_space['action'].shape[0]), std=0.01),
             )
         else:
             action_size = np.prod(envs.act_space['action'].shape)
             self.actor_mean = nn.Sequential(
-                layer_init(nn.Linear(config['latent_dim'], config['latent_dim'] // 2)),
+                layer_init(nn.Linear(config.latent_dim, config.latent_dim // 2)),
                 nn.Tanh(),
-                layer_init(nn.Linear(config['latent_dim'] // 2, action_size), std=0.01),
+                layer_init(nn.Linear(config.latent_dim // 2, action_size), std=0.01),
             )
             self.actor_logstd = nn.Parameter(torch.zeros(1, action_size))
 
@@ -217,20 +217,20 @@ class Agent(nn.Module):
 
 
 def main(envs, config, seed: int = 0):
-    batch_size = int(config['num_envs'] * config['num_steps'])
-    minibatch_size = int(batch_size // config['num_minibatches'])
-    num_iterations = config['total_timesteps'] // batch_size
+    batch_size = int(config.num_envs * config.num_steps)
+    minibatch_size = int(batch_size // config.num_minibatches)
+    num_iterations = config.total_timesteps // batch_size
     
     exp_name = os.path.basename(__file__)[: -len(".py")]
-    run_name = f"{config['task']}__{exp_name}__{seed}__{int(time.time())}"
+    run_name = f"{config.task}__{exp_name}__{seed}__{int(time.time())}"
     
-    if config['track']:
+    if config.track:
         import wandb
         wandb.init(
-            project=config['wandb_project_name'],
-            entity=config['wandb_entity'],
+            project=config.wandb_project_name,
+            entity=config.wandb_entity,
             sync_tensorboard=True,
-            config=config,
+            config=vars(config),
             name=run_name,
             monitor_gym=True,
             save_code=True,
@@ -238,38 +238,38 @@ def main(envs, config, seed: int = 0):
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in config.items()])),
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
     )
 
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = config['torch_deterministic']
+    torch.backends.cudnn.deterministic = config.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and config['cuda'] else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and config.cuda else "cpu")
 
     agent = Agent(envs, config).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=config['learning_rate'], eps=1e-5)
+    optimizer = optim.Adam(agent.parameters(), lr=config.learning_rate, eps=1e-5)
 
     # Initialize observation storage
     obs = {}
     for key in agent.mlp_keys + agent.cnn_keys:
         if key in agent.mlp_keys:
-            obs[key] = torch.zeros((config['num_steps'], config['num_envs'], agent.mlp_key_sizes[key])).to(device)
+            obs[key] = torch.zeros((config.num_steps, config.num_envs, agent.mlp_key_sizes[key])).to(device)
         else:  # CNN keys
-            obs[key] = torch.zeros((config['num_steps'], config['num_envs']) + envs.obs_space[key].shape).to(device)
+            obs[key] = torch.zeros((config.num_steps, config.num_envs) + envs.obs_space[key].shape).to(device)
     
-    actions = torch.zeros((config['num_steps'], config['num_envs']) + envs.act_space['action'].shape).to(device)
-    logprobs = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
-    rewards = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
-    dones = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
-    values = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
+    actions = torch.zeros((config.num_steps, config.num_envs) + envs.act_space['action'].shape).to(device)
+    logprobs = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    rewards = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    dones = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    values = torch.zeros((config.num_steps, config.num_envs)).to(device)
 
     global_step = 0
     start_time = time.time()
     
     action_shape = envs.act_space['action'].shape
-    num_envs = config['num_envs']
+    num_envs = config.num_envs
     
     acts = {
         'action': np.zeros((num_envs,) + action_shape, dtype=np.float32),
@@ -283,13 +283,13 @@ def main(envs, config, seed: int = 0):
     next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
 
     for iteration in range(1, num_iterations + 1):
-        if config['anneal_lr']:
+        if config.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / num_iterations
-            lrnow = frac * config['learning_rate']
+            lrnow = frac * config.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        for step in range(0, config['num_steps']):
-            global_step += config['num_envs']
+        for step in range(0, config.num_steps):
+            global_step += config.num_envs
             
             # Store observations
             for key in agent.mlp_keys + agent.cnn_keys:
@@ -323,21 +323,21 @@ def main(envs, config, seed: int = 0):
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
-            for t in reversed(range(config['num_steps'])):
-                if t == config['num_steps'] - 1:
+            for t in reversed(range(config.num_steps)):
+                if t == config.num_steps - 1:
                     nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-                delta = rewards[t] + config['gamma'] * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + config['gamma'] * config['gae_lambda'] * nextnonterminal * lastgaelam
+                delta = rewards[t] + config.gamma * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + config.gamma * config.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values
 
         # Prepare minibatches
         b_inds = np.arange(batch_size)
         clipfracs = []
-        for epoch in range(config['update_epochs']):
+        for epoch in range(config.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
@@ -355,23 +355,23 @@ def main(envs, config, seed: int = 0):
                 with torch.no_grad():
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > config['clip_coef']).float().mean().item()]
+                    clipfracs += [((ratio - 1.0).abs() > config.clip_coef).float().mean().item()]
 
                 mb_advantages = advantages.reshape(-1)[mb_inds]
-                if config['norm_adv']:
+                if config.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - config['clip_coef'], 1 + config['clip_coef'])
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - config.clip_coef, 1 + config.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 newvalue = newvalue.view(-1)
-                if config['clip_vloss']:
+                if config.clip_vloss:
                     v_loss_unclipped = (newvalue - returns.reshape(-1)[mb_inds]) ** 2
                     v_clipped = values.reshape(-1)[mb_inds] + torch.clamp(
                         newvalue - values.reshape(-1)[mb_inds],
-                        -config['clip_coef'],
-                        config['clip_coef'],
+                        -config.clip_coef,
+                        config.clip_coef,
                     )
                     v_loss_clipped = (v_clipped - returns.reshape(-1)[mb_inds]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
@@ -380,15 +380,15 @@ def main(envs, config, seed: int = 0):
                     v_loss = 0.5 * ((newvalue - returns.reshape(-1)[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - config['ent_coef'] * entropy_loss + v_loss * config['vf_coef']
+                loss = pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), config['max_grad_norm'])
+                nn.utils.clip_grad_norm_(agent.parameters(), config.max_grad_norm)
                 optimizer.step()
 
             # Handle target_kl comparison with string 'None' support
-            target_kl = config['target_kl']
+            target_kl = config.target_kl
             if isinstance(target_kl, str) and target_kl.lower() == 'none':
                 target_kl = None
 
@@ -411,7 +411,7 @@ def main(envs, config, seed: int = 0):
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
         # Additional metrics for WandB
-        if config['track']:
+        if config.track:
             wandb.log({
                 "charts/learning_rate": optimizer.param_groups[0]["lr"],
                 "losses/value_loss": v_loss.item(),
@@ -455,7 +455,7 @@ def main(envs, config, seed: int = 0):
         recent_rewards = rewards[step-recent_steps+1:step+1].mean().item()
         print(f"Global step: {global_step}, Recent rewards: {recent_rewards:.2f}")
 
-    if config['save_model']:
+    if config.save_model:
         model_path = f"runs/{run_name}/{exp_name}.cleanrl_model"
         torch.save(agent.state_dict(), model_path)
         print(f"model saved to {model_path}")

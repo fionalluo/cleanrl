@@ -359,7 +359,7 @@ def main(envs, config, seed: int = 0):
                 'action': action_np,  # Should already be (4,4)
                 'reset': next_done.cpu().numpy()  # Shape (4,)
             }
-            
+
             # TRY NOT TO MODIFY: execute the game and log data.
             obs_dict = envs.step(acts)
             
