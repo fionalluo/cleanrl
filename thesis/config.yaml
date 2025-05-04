@@ -27,13 +27,37 @@ defaults:
   target_kl: None
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}
   keys: {mlp_keys: '.*', cnn_keys: '.*'}
-  # PPO Unified Network Architecture
-  # CNN Encoder Architecture
-  mlp_hidden_dim: 256
-  mlp_output_dim: 512
-  cnn_output_dim: 512
-  latent_dim: 1024
 
+  # PPO Encoder Architecture
+  encoder:
+    act: 'silu'   # Activation function for both CNN and MLP encoders # Options: silu, relu, tanh
+    norm: 'layer'  # Layer normalization # Options: layer, none
+    output_dim: 512 # Output dimension for both CNN and MLP encoders
+
+    # MLP encoder settings
+    mlp_layers: 2
+    mlp_units: 256
+    
+    # CNN encoder settings
+    cnn_depth: 48
+    cnn_blocks: 0
+    resize: 'bilinear'
+    minres: 4
+    
+  # encoder:
+  #   act: silu
+  #   norm: layer
+  #   mlp_layers: 5
+  #   mlp_units: 1024
+  #   cnn: resnet
+  #   cnn_depth: 96
+  #   cnn_blocks: 0
+  #   resize: stride
+  #   winit: normal
+  #   fan: avg
+  #   symlog_inputs: True
+  #   minres: 4
+  
   env:
     atari: {size: [64, 64], repeat: 4, sticky: True, gray: False, actions: all, lives: unused, noops: 0, resize: opencv}
     dmlab: {size: [64, 64], repeat: 4, episodic: True}
@@ -67,8 +91,10 @@ gymnasium_lavatrail8:
   total_timesteps: 50000
   num_envs: 4
   num_steps: 128
-  full_keys: {mlp_keys: '\b(neighbors|last_action|grid|position)\b', cnn_keys: '^$'}
-  keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|grid_unprivileged|position)\b', cnn_keys: '^$'}
+  full_keys: {mlp_keys: '\b(neighbors|last_action|position)\b', cnn_keys: '^$'}
+  keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
+  # full_keys: {mlp_keys: '\b(neighbors|last_action|grid|position)\b', cnn_keys: '^$'}
+  # keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|grid_unprivileged|position)\b', cnn_keys: '^$'}
   exp_name: "lavatrail8"
 
 gymnasium_blindpick:

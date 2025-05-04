@@ -10,6 +10,7 @@ import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
+import re
 
 from nets import ImageEncoderResnet
 
@@ -26,28 +27,21 @@ class Agent(nn.Module):
         # Get observation space and keys
         obs_space = envs.obs_space
         
-        # Get the full_keys from config
-        import re
-        mlp_keys_pattern = r'.*'  # Default pattern to match all keys
-        cnn_keys_pattern = r'.*'  # Default pattern to match all keys
-        if hasattr(config, 'full_keys'):
-            mlp_keys_pattern = config.full_keys.mlp_keys
-            cnn_keys_pattern = config.full_keys.cnn_keys
+        # Get encoder config
+        encoder_config = config.encoder
         
-        # Filter keys based on the regex patterns and observation shapes
-        self.mlp_keys_total = []
-        self.cnn_keys_total = []
+        # Filter keys based on the regex patterns
+        self.mlp_keys = []
+        self.cnn_keys = []
         for k in obs_space.keys():
             if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
                 continue
             if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
-                self.cnn_keys_total.append(k)
+                if re.match(config.full_keys.cnn_keys, k):
+                    self.cnn_keys.append(k)
             else:  # Non-image observations
-                self.mlp_keys_total.append(k)
-        
-        # MLP and CNN keys that match the regex patterns in the config
-        self.mlp_keys = [k for k in self.mlp_keys_total if re.match(mlp_keys_pattern, k)]
-        self.cnn_keys = [k for k in self.cnn_keys_total if re.match(cnn_keys_pattern, k)]
+                if re.match(config.full_keys.mlp_keys, k):
+                    self.mlp_keys.append(k)
         
         # Calculate total input size for MLP
         self.total_mlp_size = 0
@@ -60,48 +54,76 @@ class Agent(nn.Module):
             self.mlp_key_sizes[key] = size
             self.total_mlp_size += size
 
-        print("MLP keys pattern: ", mlp_keys_pattern)
-        print("CNN keys pattern: ", cnn_keys_pattern)
         print(f"Using MLP keys: {self.mlp_keys}")
         print(f"Using CNN keys: {self.cnn_keys}")
         print(f"Total MLP input size: {self.total_mlp_size}")
 
-        # CNN encoder for image observations
+        # Initialize activation function
+        if encoder_config.act == 'silu':
+            self.act = nn.SiLU()
+        elif encoder_config.act == 'relu':
+            self.act = nn.ReLU()
+        elif encoder_config.act == 'tanh':
+            self.act = nn.Tanh()
+        else:
+            raise ValueError(f"Unknown activation function: {encoder_config.act}")
+
+        # Calculate CNN output dimension
+        # For ResNet encoder:
+        # Final depth = depth * 2 ** (stages - 1)
+        # Output dim = Final depth × minres × minres
         if self.cnn_keys:
-            self.cnn_encoder = ImageEncoderResnet(
-                depth=32,  # Initial depth
-                blocks=2,  # Number of residual blocks per stage
-                resize='stride',  # Resize method
-                minres=4,  # Minimum resolution
-                output_dim=config.cnn_output_dim  # Fixed output dimension
+            # Calculate number of stages based on minres
+            # Assuming input size is 64x64 (from config)
+            input_size = 64  # From config.env.atari.size
+            stages = int(np.log2(input_size) - np.log2(encoder_config.minres))
+            final_depth = encoder_config.cnn_depth * (2 ** (stages - 1))
+            cnn_output_dim = final_depth * encoder_config.minres * encoder_config.minres
+            
+            # CNN encoder for image observations
+            self.cnn_encoder = nn.Sequential(
+                ImageEncoderResnet(
+                    depth=encoder_config.cnn_depth,
+                    blocks=encoder_config.cnn_blocks,
+                    resize=encoder_config.resize,
+                    minres=encoder_config.minres,
+                    output_dim=cnn_output_dim
+                ),
+                nn.LayerNorm(cnn_output_dim) if encoder_config.norm == 'layer' else nn.Identity()
             )
         else:
             self.cnn_encoder = None
+            cnn_output_dim = 0
 
         # MLP encoder for non-image observations
         if self.mlp_keys:
-            self.mlp_encoder = nn.Sequential(
-                layer_init(nn.Linear(self.total_mlp_size, config.mlp_hidden_dim)),
-                nn.Tanh(),
-                layer_init(nn.Linear(config.mlp_hidden_dim, config.mlp_output_dim)),
-                nn.Tanh(),
-            )
+            layers = []
+            input_dim = self.total_mlp_size
+            
+            # Add MLP layers
+            for _ in range(encoder_config.mlp_layers):
+                layers.extend([
+                    layer_init(nn.Linear(input_dim, encoder_config.mlp_units)),
+                    self.act,
+                    nn.LayerNorm(encoder_config.mlp_units) if encoder_config.norm == 'layer' else nn.Identity()
+                ])
+                input_dim = encoder_config.mlp_units
+            
+            self.mlp_encoder = nn.Sequential(*layers)
         else:
             self.mlp_encoder = None
         
         # Calculate total input dimension for latent projector
-        total_input_dim = 0
-        if self.cnn_encoder is not None:
-            total_input_dim += len(self.cnn_keys) * config.cnn_output_dim
-        if self.mlp_encoder is not None:
-            total_input_dim += config.mlp_output_dim
+        total_input_dim = (cnn_output_dim if self.cnn_encoder is not None else 0) + (encoder_config.mlp_units if self.mlp_encoder is not None else 0)
         
         # Project concatenated features to latent space
         self.latent_projector = nn.Sequential(
-            layer_init(nn.Linear(total_input_dim, config.latent_dim)),
-            nn.Tanh(),
-            layer_init(nn.Linear(config.latent_dim, config.latent_dim)),
-            nn.Tanh(),
+            layer_init(nn.Linear(total_input_dim, encoder_config.output_dim)),
+            self.act,
+            nn.LayerNorm(encoder_config.output_dim) if encoder_config.norm == 'layer' else nn.Identity(),
+            layer_init(nn.Linear(encoder_config.output_dim, encoder_config.output_dim)),
+            self.act,
+            nn.LayerNorm(encoder_config.output_dim) if encoder_config.norm == 'layer' else nn.Identity()
         )
         
         # Determine if action space is discrete or continuous
@@ -109,23 +131,23 @@ class Agent(nn.Module):
         
         # Actor and critic networks operating on latent space
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(config.latent_dim, config.latent_dim // 2)),
-            nn.Tanh(),
-            layer_init(nn.Linear(config.latent_dim // 2, 1), std=1.0),
+            layer_init(nn.Linear(encoder_config.output_dim, encoder_config.output_dim // 2)),
+            self.act,
+            layer_init(nn.Linear(encoder_config.output_dim // 2, 1), std=1.0),
         )
         
         if self.is_discrete:
             self.actor = nn.Sequential(
-                layer_init(nn.Linear(config.latent_dim, config.latent_dim // 2)),
-                nn.Tanh(),
-                layer_init(nn.Linear(config.latent_dim // 2, envs.act_space['action'].shape[0]), std=0.01),
+                layer_init(nn.Linear(encoder_config.output_dim, encoder_config.output_dim // 2)),
+                self.act,
+                layer_init(nn.Linear(encoder_config.output_dim // 2, envs.act_space['action'].shape[0]), std=0.01),
             )
         else:
             action_size = np.prod(envs.act_space['action'].shape)
             self.actor_mean = nn.Sequential(
-                layer_init(nn.Linear(config.latent_dim, config.latent_dim // 2)),
-                nn.Tanh(),
-                layer_init(nn.Linear(config.latent_dim // 2, action_size), std=0.01),
+                layer_init(nn.Linear(encoder_config.output_dim, encoder_config.output_dim // 2)),
+                self.act,
+                layer_init(nn.Linear(encoder_config.output_dim // 2, action_size), std=0.01),
             )
             self.actor_logstd = nn.Parameter(torch.zeros(1, action_size))
 
@@ -134,17 +156,19 @@ class Agent(nn.Module):
             # Process CNN observations
             cnn_features = None
             if self.cnn_keys and self.cnn_encoder is not None:
-                cnn_features = []
+                # Stack all CNN observations along channels
+                cnn_inputs = []
                 for key in self.cnn_keys:
                     if key not in x:  # Skip if key doesn't exist
                         continue
                     batch_size = x[key].shape[0]
                     img = x[key].permute(0, 3, 1, 2) / 255.0  # Convert to [B, C, H, W] and normalize
-                    features = self.cnn_encoder(img)
-                    cnn_features.append(features)
+                    cnn_inputs.append(img)
                 
-                if cnn_features:  # Only process if we have any CNN features
-                    cnn_features = torch.cat(cnn_features, dim=1)
+                if cnn_inputs:  # Only process if we have any CNN features
+                    # Stack along channel dimension
+                    cnn_input = torch.cat(cnn_inputs, dim=1)
+                    cnn_features = self.cnn_encoder(cnn_input)
             
             # Process MLP observations
             mlp_features = None
@@ -277,10 +301,9 @@ def main(envs, config, seed: int = 0):
     global_step = 0
     start_time = time.time()
     
-    # Track episode returns and lengths for each environment
+    # Initialize episode tracking buffers
     episode_returns = np.zeros(config.num_envs)
     episode_lengths = np.zeros(config.num_envs)
-    last_done_global_step = torch.zeros(config.num_envs, dtype=torch.int32).to(device)
     
     action_shape = envs.act_space['action'].shape
     num_envs = config.num_envs
@@ -333,39 +356,26 @@ def main(envs, config, seed: int = 0):
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
             rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(device).view(-1)
 
-            # Check for done environments and calculate returns
-            done_envs = torch.where(next_done)[0]
-            for env_idx in done_envs:
-                env_idx = env_idx.item()
+            # Update episode returns and lengths
+            for env_idx in range(config.num_envs):
+                episode_returns[env_idx] += obs_dict['reward'][env_idx]
+                episode_lengths[env_idx] += 1
                 
-                # Calculate episode length using global steps
-                start_global = last_done_global_step[env_idx] + 1
-                end_global = global_step - config.num_envs + env_idx  # because envs step together
-                episode_steps = (end_global - start_global) // config.num_envs + 1
-                
-                # Figure out which steps to sum
-                reward_steps = []
-                for s in range(config.num_steps):
-                    step_global = global_step - config.num_envs * (config.num_steps - s)
-                    if step_global >= start_global and step_global <= end_global:
-                        reward_steps.append(s)
-                episode_return = rewards[reward_steps, env_idx].sum().item()
-                
-                # Log the episode
-                print(f"global_step={global_step}, episode_return={episode_return}, episode_length={episode_steps}")
-                writer.add_scalar("charts/episode_return", episode_return, global_step)
-                writer.add_scalar("charts/episode_length", episode_steps, global_step)
-                
-                # Log to wandb if tracking is enabled
-                if config.track:
-                    wandb.log({
-                        "charts/episode_return": episode_return,
-                        "charts/episode_length": episode_steps,
-                        "metrics/global_step": global_step,
-                    })
-                
-                # Update tracking
-                last_done_global_step[env_idx] = global_step
+                if obs_dict['is_last'][env_idx]:
+                    print(f"global_step={global_step}, episode_return={episode_returns[env_idx]}, episode_length={episode_lengths[env_idx]}")
+                    writer.add_scalar("charts/episode_return", episode_returns[env_idx], global_step)
+                    writer.add_scalar("charts/episode_length", episode_lengths[env_idx], global_step)
+                    
+                    if config.track:
+                        wandb.log({
+                            "charts/episode_return": episode_returns[env_idx],
+                            "charts/episode_length": episode_lengths[env_idx],
+                            "metrics/global_step": global_step,
+                        })
+
+                    # Reset for the next episode
+                    episode_returns[env_idx] = 0
+                    episode_lengths[env_idx] = 0
 
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
