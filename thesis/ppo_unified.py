@@ -399,6 +399,7 @@ def main(envs, config, seed: int = 0):
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
+        # Log to TensorBoard
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -407,8 +408,52 @@ def main(envs, config, seed: int = 0):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+        # Additional metrics for WandB
+        if config['track']:
+            wandb.log({
+                "charts/learning_rate": optimizer.param_groups[0]["lr"],
+                "losses/value_loss": v_loss.item(),
+                "losses/policy_loss": pg_loss.item(),
+                "losses/entropy": entropy_loss.item(),
+                "losses/old_approx_kl": old_approx_kl.item(),
+                "losses/approx_kl": approx_kl.item(),
+                "losses/clipfrac": np.mean(clipfracs),
+                "losses/explained_variance": explained_var,
+                "charts/SPS": int(global_step / (time.time() - start_time)),
+                "metrics/mean_reward": rewards.mean().item(),
+                "metrics/max_reward": rewards.max().item(),
+                "metrics/min_reward": rewards.min().item(),
+                "metrics/mean_value": values.mean().item(),
+                "metrics/max_value": values.max().item(),
+                "metrics/min_value": values.min().item(),
+                "metrics/mean_advantage": advantages.mean().item(),
+                "metrics/max_advantage": advantages.max().item(),
+                "metrics/min_advantage": advantages.min().item(),
+                "metrics/mean_return": returns.mean().item(),
+                "metrics/max_return": returns.max().item(),
+                "metrics/min_return": returns.min().item(),
+                "metrics/mean_entropy": entropy.mean().item(),
+                "metrics/max_entropy": entropy.max().item(),
+                "metrics/min_entropy": entropy.min().item(),
+                "metrics/mean_ratio": ratio.mean().item(),
+                "metrics/max_ratio": ratio.max().item(),
+                "metrics/min_ratio": ratio.min().item(),
+                "metrics/mean_logprob": logprobs.mean().item(),
+                "metrics/max_logprob": logprobs.max().item(),
+                "metrics/min_logprob": logprobs.min().item(),
+                "metrics/mean_grad_norm": torch.norm(torch.cat([p.grad.view(-1) for p in agent.parameters() if p.grad is not None])).item() if any(p.grad is not None for p in agent.parameters()) else 0.0,
+                "metrics/mean_param_norm": torch.norm(torch.cat([p.view(-1) for p in agent.parameters()])).item(),
+                "metrics/num_updates": iteration,
+                "metrics/global_step": global_step,
+                "metrics/epoch": epoch,
+            })
+
+        # Print recent rewards (last 10 steps)
+        recent_steps = min(10, step + 1)  # Handle case where we haven't collected 10 steps yet
+        recent_rewards = rewards[step-recent_steps+1:step+1].mean().item()
+        print(f"Global step: {global_step}, Recent rewards: {recent_rewards:.2f}")
 
     if config['save_model']:
         model_path = f"runs/{run_name}/{exp_name}.cleanrl_model"
