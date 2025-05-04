@@ -25,8 +25,8 @@ import ruamel.yaml
 import embodied
 from embodied import wrappers
 
-# Import cleanrl PPO agent structure
-from ppo_agent import Agent, layer_init
+# Import unified PPO implementation
+from ppo_unified import main as ppo_main
 
 # --- Config loading ---
 def parse_args():
@@ -46,15 +46,11 @@ def load_config(argv=None):
     for name in parsed.configs:
         config = config.update(configs[name])
     config = embodied.Flags(config).parse(other)
-    # args = embodied.Config(
-    #     **config.run, logdir=config.logdir,
-    #     batch_steps=config.batch_size * config.batch_length, policy_rollout_every=config.policy_rollout_every, full_policy_rollout_every=config.full_policy_rollout_every)
     print(config)
 
     return config
 
 # --- Environment creation ---
-
 def make_envs(config):
     suite, task = config['task'].split('_', 1)
     ctors = []
@@ -69,9 +65,6 @@ def make_envs(config):
     return embodied.BatchEnv(envs, parallel=(config.get('envs', {}).get('parallel', 'none') != 'none'))
 
 def make_env(config, **overrides):
-    # You can add custom environments by creating and returning the environment
-    # instance here. Environments with different interfaces can be converted
-    # using `embodied.envs.from_gym.FromGym` and `embodied.envs.from_dm.FromDM`.
     suite, task = config.task.split('_', 1)
     if "TrailEnv" in task or "GridBlindPick" or "LavaTrail" in task:
         import trailenv
@@ -134,14 +127,12 @@ def wrap_env(env, config):
 
     return env
 
-
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default="thesis/config.yaml", help="Path to config file.")
     parser.add_argument('--configs', type=str, nargs='+', default=['defaults'], help="List of config names to apply.")
     parser.add_argument('--seed', type=int, default=None, help="Optional override seed")
-    return parser.parse_args(argv)  # <<<<< VERY IMPORTANT: pass argv here
-
+    return parser.parse_args(argv)
 
 # --- PPO Training ---
 def main(argv=None):
@@ -160,27 +151,8 @@ def main(argv=None):
     env = make_env(config)
     envs = make_envs(config)
 
-    # Decide whether discrete or continuous
-    action_spaces = [space for name, space in env.act_space.items() if name != "reset"]
-    if len(action_spaces) != 1:
-        raise ValueError("Only single-action-space environments are supported for now.")
-    action_space = action_spaces[0]
-
-    if action_space.discrete:
-        from ppo import Args, main as ppo_main
-    else:
-        from ppo_continuous_action import Args, main as ppo_main
-
-    print(f"[train.py] Detected action space type: {'Discrete' if action_space.discrete else 'Continuous'}")
-
-    # Create PPO args and run training
-    args = Args(
-        seed=seed,
-        config=config,
-        env=envs,
-        env_id=config.task,
-    )
-    ppo_main(args)
+    # Run training with unified PPO
+    ppo_main(envs, config, seed)
 
 if __name__ == "__main__":
     main()

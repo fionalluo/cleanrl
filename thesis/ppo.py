@@ -2,85 +2,15 @@
 import os
 import random
 import time
-from dataclasses import dataclass
 
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 import embodied
-
-
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    config: str = "thesis/config.yaml"
-    """path to the config file"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-    env: gym.Env = None
-    """the environment to train on"""
-
-    # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
-    """the id of the environment"""
-    total_timesteps: int = 500000
-    """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
-    """the learning rate of the optimizer"""
-    num_envs: int = 4
-    """the number of parallel game environments"""
-    num_steps: int = 128
-    """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
-    """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
-    """the discount factor gamma"""
-    gae_lambda: float = 0.95
-    """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
-    """the number of mini-batches"""
-    update_epochs: int = 4
-    """the K epochs to update the policy"""
-    norm_adv: bool = True
-    """Toggles advantages normalization"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
-    max_grad_norm: float = 0.5
-    """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
-
-    # to be filled in runtime
-    batch_size: int = 0
-    """the batch size (computed in runtime)"""
-    minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
-    num_iterations: int = 0
-    """the number of iterations (computed in runtime)"""
 
 
 def make_env(env_id, idx, capture_video, run_name):
@@ -111,68 +41,124 @@ class Agent(nn.Module):
         
         # Get the full_keys from config
         import re
-        mlp_keys_pattern = r'\b(neighbors|last_action|grid|position)\b'  # Default pattern
+        mlp_keys_pattern = r'.*'  # Default pattern to match all keys
+        cnn_keys_pattern = r'.*'  # Default pattern to match all keys
         if hasattr(envs, 'config') and 'full_keys' in envs.config:
             mlp_keys_pattern = envs.config['full_keys']['mlp_keys']
+            cnn_keys_pattern = envs.config['full_keys']['cnn_keys']
         
-        # Filter keys based on the regex pattern
-        mlp_keys = [k for k in obs_space.keys() 
-                   if k not in ['reward', 'is_first', 'is_last', 'is_terminal']
-                   and re.match(mlp_keys_pattern, k)]
+        # Filter keys based on the regex patterns
+        self.mlp_keys = [k for k in obs_space.keys() 
+                        if k not in ['reward', 'is_first', 'is_last', 'is_terminal']
+                        and re.match(mlp_keys_pattern, k)]
+        self.cnn_keys = [k for k in obs_space.keys() 
+                        if k not in ['reward', 'is_first', 'is_last', 'is_terminal']
+                        and re.match(cnn_keys_pattern, k)]
         
-        # Calculate total input size
-        total_input_size = 0
-        for key in mlp_keys:
+        # Calculate total input size for MLP
+        self.total_mlp_size = 0
+        for key in self.mlp_keys:
             if isinstance(obs_space[key].shape, tuple):
-                total_input_size += np.prod(obs_space[key].shape)
+                self.total_mlp_size += np.prod(obs_space[key].shape)
             else:
-                total_input_size += 1
+                self.total_mlp_size += 1
                 
-        print(f"Using observation keys: {mlp_keys}")
-        print(f"Total input size: {total_input_size}")
-        
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(total_input_size, 64)),
+        print(f"Using MLP keys: {self.mlp_keys}")
+        print(f"Using CNN keys: {self.cnn_keys}")
+        print(f"Total MLP input size: {self.total_mlp_size}")
+
+        # CNN network for image observations
+        if self.cnn_keys:
+            self.cnn = nn.Sequential(
+                layer_init(nn.Conv2d(4, 32, 8, stride=4)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+                nn.ReLU(),
+                nn.Flatten(),
+                layer_init(nn.Linear(64 * 7 * 7, 512)),
+                nn.ReLU(),
+            )
+            cnn_output_size = 512
+        else:
+            cnn_output_size = 0
+
+        # MLP network for non-image observations
+        self.mlp = nn.Sequential(
+            layer_init(nn.Linear(self.total_mlp_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
+            nn.Tanh(),
+        )
+        mlp_output_size = 64
+
+        # Combine features from both networks
+        combined_size = cnn_output_size + mlp_output_size
+        
+        # Actor and critic networks
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(combined_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 1), std=1.0),
         )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(total_input_size, 64)),
+            layer_init(nn.Linear(combined_size, 64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.act_space['action'].shape[0]), std=0.01),  # Use shape[0] for the number of actions
+            layer_init(nn.Linear(64, envs.act_space['action'].shape[0]), std=0.01),
         )
-        
-        # Store the observation keys
-        self.mlp_keys = mlp_keys
 
     def get_value(self, x):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
-        logits = self.actor(x)
+        # Process CNN keys if they exist
+        cnn_features = torch.zeros(x.shape[0], 512).to(x.device) if self.cnn_keys else None
+        if self.cnn_keys:
+            # Assuming CNN keys are images, process them through CNN
+            for key in self.cnn_keys:
+                cnn_features = self.cnn(x[key] / 255.0)
+        
+        # Process MLP keys
+        mlp_features = torch.zeros(x.shape[0], self.total_mlp_size).to(x.device)
+        for i, key in enumerate(self.mlp_keys):
+            if isinstance(x[key].shape, tuple):
+                mlp_features[:, i:i+np.prod(x[key].shape)] = x[key].view(x.shape[0], -1)
+            else:
+                mlp_features[:, i] = x[key]
+        mlp_features = self.mlp(mlp_features)
+        
+        # Combine features
+        if cnn_features is not None:
+            combined_features = torch.cat([cnn_features, mlp_features], dim=1)
+        else:
+            combined_features = mlp_features
+
+        # Get action and value
+        logits = self.actor(combined_features)
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+        return action, probs.log_prob(action), probs.entropy(), self.critic(combined_features)
 
 
-def main(args):
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
+def main(envs, config, seed: int = 0):
+    # Calculate batch sizes and iterations
+    batch_size = int(config['num_envs'] * config['num_steps'])
+    minibatch_size = int(batch_size // config['num_minibatches'])
+    num_iterations = config['total_timesteps'] // batch_size
+    
+    # Setup experiment name and tracking
+    exp_name = os.path.basename(__file__)[: -len(".py")]
+    run_name = f"{config['task']}__{exp_name}__{seed}__{int(time.time())}"
+    
+    if config['track']:
         import wandb
-
         wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
+            project=config['wandb_project_name'],
+            entity=config['wandb_entity'],
             sync_tensorboard=True,
-            config=vars(args),
+            config=config,
             name=run_name,
             monitor_gym=True,
             save_code=True,
@@ -180,65 +166,27 @@ def main(args):
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in config.items()])),
     )
 
     # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = config['torch_deterministic']
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-
-    # env setup
-    if args.env is None:
-        envs = gym.vector.SyncVectorEnv(
-            [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
-        )
-    else:
-        envs = args.env
-        # Get action and observation spaces from BatchEnv
-        action_space = envs.act_space['action']  # Assuming 'action' is the key for the action space
-        assert isinstance(action_space, embodied.Space) and action_space.discrete, "only discrete action space is supported"
-        obs_space = envs.obs_space
-        
-        # Print available observation space keys for debugging
-        print("Available observation space keys:", list(obs_space.keys()))
-        
-        # Get the full_keys from config
-        import re
-        mlp_keys_pattern = r'\b(neighbors|last_action|grid|position)\b'  # Default pattern
-        if hasattr(envs, 'config') and 'full_keys' in envs.config:
-            mlp_keys_pattern = envs.config['full_keys']['mlp_keys']
-        
-        # Filter keys based on the regex pattern
-        mlp_keys = [k for k in obs_space.keys() 
-                   if k not in ['reward', 'is_first', 'is_last', 'is_terminal']
-                   and re.match(mlp_keys_pattern, k)]
-        
-        # Calculate total input size
-        total_input_size = 0
-        for key in mlp_keys:
-            if isinstance(obs_space[key].shape, tuple):
-                total_input_size += np.prod(obs_space[key].shape)
-            else:
-                total_input_size += 1
-                
-        print(f"Using observation keys: {mlp_keys}")
-        print(f"Total input size: {total_input_size}")
+    device = torch.device("cuda" if torch.cuda.is_available() and config['cuda'] else "cpu")
 
     agent = Agent(envs).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    optimizer = optim.Adam(agent.parameters(), lr=config['learning_rate'], eps=1e-5)
 
     # ALGO Logic: Storage setup
-    # We'll handle the observation shape in the agent
-    obs = torch.zeros((args.num_steps, args.num_envs, total_input_size)).to(device)  # Store flattened observations
-    actions = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    obs = torch.zeros((config['num_steps'], config['num_envs'], agent.total_mlp_size)).to(device)
+    actions = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
+    logprobs = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
+    rewards = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
+    dones = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
+    values = torch.zeros((config['num_steps'], config['num_envs'])).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -246,29 +194,29 @@ def main(args):
     
     # Initialize actions with zeros and reset flags
     acts = {
-        k: np.zeros((args.num_envs,) + v.shape, v.dtype)
+        k: np.zeros((config['num_envs'],) + v.shape, v.dtype)
         for k, v in envs.act_space.items()}
-    acts['reset'] = np.ones(args.num_envs, bool)  # Reset all environments initially
+    acts['reset'] = np.ones(config['num_envs'], bool)  # Reset all environments initially
     
     # Get initial observations
     obs_dict = envs.step(acts)
     # Convert observations to correct dtype and concatenate
     next_obs = torch.cat([
-        torch.Tensor(obs_dict[k].astype(np.float32)).view(args.num_envs, -1) 
-        for k in mlp_keys
+        torch.Tensor(obs_dict[k].astype(np.float32)).view(config['num_envs'], -1) 
+        for k in agent.mlp_keys
     ], dim=1).to(device)
     next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
 
-    for iteration in range(1, args.num_iterations + 1):
+    for iteration in range(1, num_iterations + 1):
         # Annealing the rate if instructed to do so.
-        if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.learning_rate
+        if config['anneal_lr']:
+            frac = 1.0 - (iteration - 1.0) / num_iterations
+            lrnow = frac * config['learning_rate']
             optimizer.param_groups[0]["lr"] = lrnow
 
-        for step in range(0, args.num_steps):
-            global_step += args.num_envs
-            obs[step] = next_obs  # Store flattened observations
+        for step in range(0, config['num_steps']):
+            global_step += config['num_envs']
+            obs[step] = next_obs
             dones[step] = next_done
 
             # ALGO LOGIC: action logic
@@ -281,8 +229,8 @@ def main(args):
             # Prepare actions for environment step
             action_np = action.cpu().numpy()
             # Convert to one-hot format
-            one_hot_action = np.zeros((args.num_envs, envs.act_space['action'].shape[0]), dtype=np.float32)
-            one_hot_action[np.arange(args.num_envs), action_np] = 1.0
+            one_hot_action = np.zeros((config['num_envs'], envs.act_space['action'].shape[0]), dtype=np.float32)
+            one_hot_action[np.arange(config['num_envs']), action_np] = 1.0
             
             acts = {
                 'action': one_hot_action,
@@ -293,8 +241,8 @@ def main(args):
             obs_dict = envs.step(acts)
             # Convert observations to correct dtype and concatenate
             next_obs = torch.cat([
-                torch.Tensor(obs_dict[k].astype(np.float32)).view(args.num_envs, -1) 
-                for k in mlp_keys
+                torch.Tensor(obs_dict[k].astype(np.float32)).view(config['num_envs'], -1) 
+                for k in agent.mlp_keys
             ], dim=1).to(device)
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
             rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(device).view(-1)
@@ -309,15 +257,15 @@ def main(args):
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
+            for t in reversed(range(config['num_steps'])):
+                if t == config['num_steps'] - 1:
                     nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                delta = rewards[t] + config['gamma'] * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + config['gamma'] * config['gae_lambda'] * nextnonterminal * lastgaelam
             returns = advantages + values
 
         # flatten the batch
@@ -329,12 +277,12 @@ def main(args):
         b_values = values.reshape(-1)
 
         # Optimizing the policy and value network
-        b_inds = np.arange(args.batch_size)
+        b_inds = np.arange(batch_size)
         clipfracs = []
-        for epoch in range(args.update_epochs):
+        for epoch in range(config['update_epochs']):
             np.random.shuffle(b_inds)
-            for start in range(0, args.batch_size, args.minibatch_size):
-                end = start + args.minibatch_size
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
@@ -345,25 +293,25 @@ def main(args):
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
+                    clipfracs += [((ratio - 1.0).abs() > config['clip_coef']).float().mean().item()]
 
                 mb_advantages = b_advantages[mb_inds]
-                if args.norm_adv:
+                if config['norm_adv']:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - config['clip_coef'], 1 + config['clip_coef'])
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value loss
                 newvalue = newvalue.view(-1)
-                if args.clip_vloss:
+                if config['clip_vloss']:
                     v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
                     v_clipped = b_values[mb_inds] + torch.clamp(
                         newvalue - b_values[mb_inds],
-                        -args.clip_coef,
-                        args.clip_coef,
+                        -config['clip_coef'],
+                        config['clip_coef'],
                     )
                     v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
@@ -372,14 +320,14 @@ def main(args):
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - config['ent_coef'] * entropy_loss + v_loss * config['vf_coef']
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                nn.utils.clip_grad_norm_(agent.parameters(), config['max_grad_norm'])
                 optimizer.step()
 
-            if args.target_kl is not None and approx_kl > args.target_kl:
+            if config['target_kl'] is not None and approx_kl > config['target_kl']:
                 break
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
@@ -400,8 +348,3 @@ def main(args):
 
     envs.close()
     writer.close()
-
-
-if __name__ == "__main__":
-    args = tyro.cli(Args)
-    main(args)

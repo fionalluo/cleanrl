@@ -13,8 +13,9 @@ CONFIGS=(
   # "cartpole_small"
   # "mountaincar_medium"
   # "acrobot_large"
-  "gymnasium_bandit5"
+  # "gymnasium_bandit5"
   # "gymnasium_lavatrail8"
+  "gymnasium_blindpick"
 )
 
 NUM_SEEDS=1
