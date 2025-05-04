@@ -26,7 +26,7 @@ import embodied
 from embodied import wrappers
 
 # Import unified PPO implementation
-from ppo_unified import main as ppo_main
+from ppo import main as ppo_main
 
 # --- Config loading ---
 def parse_args():
