@@ -1,4 +1,5 @@
 import os
+import sys
 import random
 import time
 from dataclasses import dataclass
@@ -12,7 +13,10 @@ from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
 import re
 
-from nets import ImageEncoderResnet
+# Add thesis directory to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from shared.nets import ImageEncoderResnet
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -436,7 +440,8 @@ def main(envs, config, seed: int = 0):
                                             format="gif"
                                         )
                                     }, step=global_step)
-                                writer.add_video(f"videos/{key}", processed_frames[None], global_step, fps=10)
+                                # Remove TensorBoard video logging
+                                # writer.add_video(f"videos/{key}", processed_frames[None], global_step, fps=10)
                         
                         # Reset video frames and update last log
                         video_frames = {key: [] for key in config.log_keys_video}

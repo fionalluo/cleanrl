@@ -6,6 +6,7 @@ import argparse
 import warnings
 import pathlib
 import importlib
+import re
 from functools import partial as bind
 from types import SimpleNamespace
 
@@ -22,12 +23,19 @@ from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 import ruamel.yaml
 
-# Add embodied to path (adjust if needed)
+# Add thesis directory to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import embodied package and its components
 import embodied
 from embodied import wrappers
+from embodied.core import Path, Flags, Config
 
-# Import unified PPO implementation
-from ppo import main as ppo_main
+# Import teacher-student components
+from thesis.teacher_student.teacher import TeacherPolicy
+from thesis.teacher_student.student import StudentPolicy
+from thesis.teacher_student.replay_buffer import ReplayBuffer
+from thesis.teacher_student.bc import BehavioralCloning
 
 def dict_to_namespace(d):
     """Convert a dictionary to a SimpleNamespace recursively."""
@@ -39,7 +47,6 @@ def dict_to_namespace(d):
             setattr(namespace, key, value)
     return namespace
 
-# --- Config loading ---
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default="config.yaml", help="Path to config file.")
@@ -64,7 +71,6 @@ def load_config(argv=None):
 
     return config
 
-# --- Environment creation ---
 def make_envs(config):
     suite, task = config.task.split('_', 1)
     ctors = []
@@ -141,17 +147,9 @@ def wrap_env(env, config):
 
     return env
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default="thesis/config.yaml", help="Path to config file.")
-    parser.add_argument('--configs', type=str, nargs='+', default=['defaults'], help="List of config names to apply.")
-    parser.add_argument('--seed', type=int, default=None, help="Optional override seed")
-    return parser.parse_args(argv)
-
-# --- PPO Training ---
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    parsed_args = parse_args(argv)
+    parsed_args = parse_args()
     config = load_config(argv)
 
     # Seeding
@@ -165,8 +163,135 @@ def main(argv=None):
     env = make_env(config)
     envs = make_envs(config)
 
-    # Run training with unified PPO
-    ppo_main(envs, config, seed)
+    # Initialize components
+    device = torch.device("cuda" if torch.cuda.is_available() and config.cuda else "cpu")
+    
+    teacher = TeacherPolicy(envs, config).to(device)
+    student = StudentPolicy(envs, config).to(device)
+    
+    replay_buffer = ReplayBuffer(
+        config.replay_buffer.capacity,
+        envs.obs_space,
+        config.full_keys,
+        config.keys
+    )
+    
+    bc_trainer = BehavioralCloning(student, config)
+    
+    # Initialize optimizers
+    teacher_optimizer = optim.Adam(teacher.parameters(), lr=config.learning_rate, eps=1e-5)
+    student_optimizer = optim.Adam(student.parameters(), lr=config.bc.learning_rate, eps=1e-5)
+    
+    # Initialize logging
+    exp_name = os.path.basename(__file__)[: -len(".py")]
+    run_name = f"{config.task}__{exp_name}__{seed}__{int(time.time())}"
+    
+    if config.track:
+        import wandb
+        wandb.init(
+            project=config.wandb_project_name,
+            entity=config.wandb_entity,
+            sync_tensorboard=True,
+            config=vars(config),
+            name=run_name,
+            monitor_gym=False,
+            save_code=True,
+        )
+    writer = SummaryWriter(f"runs/{run_name}")
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
+    )
+    
+    # Training loop
+    global_step = 0
+    start_time = time.time()
+    
+    # Initialize episode tracking buffers
+    episode_returns = np.zeros(config.num_envs)
+    episode_lengths = np.zeros(config.num_envs)
+    
+    # Initialize video logging buffers
+    video_frames = {key: [] for key in config.log_keys_video}
+    last_video_log = 0
+    video_log_interval = 10000  # Log a video every 10k steps
+    
+    # Initialize actions with zeros and reset flags
+    action_shape = envs.act_space['action'].shape
+    num_envs = config.num_envs
+    
+    acts = {
+        'action': np.zeros((num_envs,) + action_shape, dtype=np.float32),
+        'reset': np.ones(num_envs, dtype=bool)  # Reset all environments initially
+    }
+    
+    # Get initial observations
+    obs_dict = envs.step(acts)
+    next_obs = {}
+    for key in teacher.mlp_keys + teacher.cnn_keys:
+        next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
+    next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
+    
+    # Main training loop
+    for iteration in range(1, config.total_timesteps // (config.num_envs * config.num_steps) + 1):
+        if config.anneal_lr:
+            frac = 1.0 - (iteration - 1.0) / (config.total_timesteps // (config.num_envs * config.num_steps))
+            lrnow = frac * config.learning_rate
+            teacher_optimizer.param_groups[0]["lr"] = lrnow
+            student_optimizer.param_groups[0]["lr"] = lrnow
+        
+        # 1. Teacher collects transitions
+        teacher_transitions = teacher.collect_transitions(envs, config.num_steps)
+        
+        # 2. Store transitions in replay buffer
+        for transition in teacher_transitions:
+            replay_buffer.add(transition)
+        
+        # 3. Update teacher policy using PPO
+        # TODO: Implement PPO update for teacher
+        
+        # 4. Student learns from teacher via BC
+        if len(replay_buffer) >= config.bc.batch_size:
+            bc_metrics = bc_trainer.train(
+                replay_buffer,
+                config.bc.num_steps,
+                config.bc.batch_size,
+                writer,
+                global_step
+            )
+            
+            # Log BC metrics
+            if config.track:
+                wandb.log({
+                    "bc/loss": bc_metrics['bc_loss'],
+                    "bc/action_diff": bc_metrics.get('action_diff', None),
+                    "metrics/global_step": global_step,
+                })
+        
+        # 5. Optionally: Student fine-tunes with PPO
+        # TODO: Implement PPO update for student
+        
+        # Update global step
+        global_step += config.num_envs * config.num_steps
+        
+        # Log metrics
+        if config.track:
+            wandb.log({
+                "charts/learning_rate": teacher_optimizer.param_groups[0]["lr"],
+                "charts/SPS": int(global_step / (time.time() - start_time)),
+                "metrics/global_step": global_step,
+            })
+    
+    if config.save_model:
+        model_path = f"runs/{run_name}/{exp_name}.cleanrl_model"
+        torch.save({
+            'teacher_state_dict': teacher.state_dict(),
+            'student_state_dict': student.state_dict(),
+        }, model_path)
+        print(f"model saved to {model_path}")
+
+    envs.close()
+    writer.close()
 
 if __name__ == "__main__":
     main()
