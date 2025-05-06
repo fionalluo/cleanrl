@@ -4,8 +4,9 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
 class BehavioralCloning:
-    def __init__(self, student_policy, config):
+    def __init__(self, student_policy, teacher_policy, config):
         self.student = student_policy
+        self.teacher = teacher_policy
         self.config = config
         self.optimizer = optim.Adam(
             student_policy.parameters(),
@@ -18,17 +19,34 @@ class BehavioralCloning:
         
         Args:
             batch: dict containing:
-                - partial_obs: dict of partial observations
-                - action: teacher's actions
+                - partial_obs: dict of partial observations from student trajectories
+                - full_obs: dict of full observations from student trajectories
                 
         Returns:
             dict containing training metrics
         """
-        # Get student's action predictions
+        # Get student's action predictions using partial observations
         _, student_log_probs, _, _ = self.student.get_action_and_value(batch['partial_obs'])
         
-        # Get teacher's actions
-        teacher_actions = batch['action']
+        # Get teacher's actions using full observations
+        with torch.no_grad():
+            # Filter observations to only include teacher's keys
+            teacher_obs = {}
+            for key in self.teacher.mlp_keys + self.teacher.cnn_keys:
+                if key in batch['full_obs']:
+                    # Ensure the observation has the correct shape
+                    obs = batch['full_obs'][key]
+                    if len(obs.shape) == 2:  # [batch_size, flattened_size]
+                        teacher_obs[key] = obs
+                    else:  # [batch_size, *original_shape]
+                        # For MLP observations, flatten all dimensions except batch
+                        if key in self.teacher.mlp_keys:
+                            teacher_obs[key] = obs.reshape(obs.shape[0], -1)
+                        # For CNN observations, keep the image shape
+                        else:
+                            teacher_obs[key] = obs
+            
+            teacher_actions, _, _, _ = self.teacher.get_action_and_value(teacher_obs)
         
         # Compute loss
         if self.student.is_discrete:
@@ -56,7 +74,7 @@ class BehavioralCloning:
         """Train the student policy using BC for a number of steps.
         
         Args:
-            replay_buffer: ReplayBuffer containing teacher demonstrations
+            replay_buffer: ReplayBuffer containing student trajectories
             num_steps: Number of training steps
             batch_size: Batch size for training
             writer: TensorBoard writer for logging

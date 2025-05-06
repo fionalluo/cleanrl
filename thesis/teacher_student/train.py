@@ -206,7 +206,7 @@ def main(argv=None):
         config.keys
     )
     
-    bc_trainer = BehavioralCloning(student, config)
+    bc_trainer = BehavioralCloning(student, teacher, config)
     
     # Initialize optimizers
     teacher_optimizer = optim.Adam(teacher.parameters(), lr=config.learning_rate, eps=1e-5)
@@ -474,6 +474,17 @@ def main(argv=None):
         
         # 4. Student learns from teacher via BC
         if len(replay_buffer) >= config.bc.batch_size:
+            # Clear the replay buffer to only use new trajectories
+            replay_buffer.buffer.clear()
+            
+            # Collect trajectories from student policy
+            student_transitions = student.collect_transitions(envs, config.num_steps)
+            
+            # Add student trajectories to replay buffer
+            for transition in student_transitions:
+                replay_buffer.add(transition)
+            
+            # Train BC on student trajectories
             bc_metrics = bc_trainer.train(
                 replay_buffer,
                 config.bc.num_steps,

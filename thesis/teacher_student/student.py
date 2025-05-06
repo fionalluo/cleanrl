@@ -23,7 +23,7 @@ class StudentPolicy(BaseAgent):
         # Get encoder config
         encoder_config = config.encoder
         
-        # Filter keys based on the regex patterns
+        # Filter keys based on the regex patterns for student
         self.mlp_keys = []
         self.cnn_keys = []
         for k in obs_space.keys():
@@ -35,6 +35,19 @@ class StudentPolicy(BaseAgent):
             else:  # Non-image observations
                 if re.match(config.keys.mlp_keys, k):
                     self.mlp_keys.append(k)
+        
+        # Filter keys based on the regex patterns for teacher
+        self.all_mlp_keys = []
+        self.all_cnn_keys = []
+        for k in obs_space.keys():
+            if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
+                continue
+            if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
+                if re.match(config.full_keys.cnn_keys, k):
+                    self.all_cnn_keys.append(k)
+            else:  # Non-image observations
+                if re.match(config.full_keys.mlp_keys, k):
+                    self.all_mlp_keys.append(k)
         
         # Calculate total input size for MLP
         self.total_mlp_size = 0
@@ -231,13 +244,14 @@ class StudentPolicy(BaseAgent):
                 action = probs.sample()
             return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(latent)
 
-    def train_bc(self, replay_buffer, batch_size, optimizer):
+    def train_bc(self, replay_buffer, batch_size, optimizer, teacher_policy):
         """Train the student policy using behavioral cloning.
         
         Args:
-            replay_buffer: ReplayBuffer containing teacher demonstrations
+            replay_buffer: ReplayBuffer containing student trajectories
             batch_size: Batch size for training
             optimizer: Optimizer for the student policy
+            teacher_policy: Teacher policy to get actions for BC loss
             
         Returns:
             dict containing training metrics
@@ -248,8 +262,9 @@ class StudentPolicy(BaseAgent):
         # Get student's action predictions
         _, student_log_probs, _, _ = self.get_action_and_value(batch['partial_obs'])
         
-        # Get teacher's actions
-        teacher_actions = batch['action']
+        # Get teacher's actions on the same observations
+        with torch.no_grad():
+            teacher_actions, _, _, _ = teacher_policy.get_action_and_value(batch['full_obs'])
         
         # Compute loss
         if self.is_discrete:
@@ -280,19 +295,23 @@ class StudentPolicy(BaseAgent):
             
         Returns:
             list of transitions, each containing:
-                - obs: dict of partial observations
+                - obs: dict of observations (both partial and full)
                 - action: action taken
                 - reward: reward received
-                - next_obs: dict of next partial observations
+                - next_obs: dict of next observations (both partial and full)
                 - done: whether episode ended
         """
         transitions = []
         
+        # Get all keys needed for both student and teacher
+        all_keys = set(self.mlp_keys + self.cnn_keys + self.all_mlp_keys + self.all_cnn_keys)
+        
         # Initialize observation storage
         obs = {}
-        for key in self.mlp_keys + self.cnn_keys:
-            if key in self.mlp_keys:
-                obs[key] = torch.zeros((num_steps, self.config.num_envs, self.mlp_key_sizes[key])).to(self.device)
+        for key in all_keys:
+            if key in self.mlp_keys or key in self.all_mlp_keys:
+                size = np.prod(envs.obs_space[key].shape)
+                obs[key] = torch.zeros((num_steps, self.config.num_envs, size)).to(self.device)
             else:  # CNN keys
                 obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.device)
         
@@ -317,20 +336,21 @@ class StudentPolicy(BaseAgent):
         # Get initial observations using step with reset flags
         obs_dict = envs.step(acts)
         next_obs = {}
-        for key in self.mlp_keys + self.cnn_keys:
+        for key in all_keys:
             next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.device)
         next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.device)
         
         # Collect transitions
         for step in range(num_steps):
             # Store observations
-            for key in self.mlp_keys + self.cnn_keys:
+            for key in all_keys:
                 obs[key][step] = next_obs[key]
             dones[step] = next_done
             
-            # Get action from policy
+            # Get action from policy using only student's observation keys
+            student_obs = {key: next_obs[key] for key in self.mlp_keys + self.cnn_keys}
             with torch.no_grad():
-                action, _, _, _ = self.get_action_and_value(next_obs)
+                action, _, _, _ = self.get_action_and_value(student_obs)
                 actions[step] = action
             
             # Step environment
@@ -346,7 +366,7 @@ class StudentPolicy(BaseAgent):
             obs_dict = envs.step(acts)
             
             # Process observations
-            for key in self.mlp_keys + self.cnn_keys:
+            for key in all_keys:
                 next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.device)
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.device)
             rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(self.device)
@@ -354,10 +374,10 @@ class StudentPolicy(BaseAgent):
             # Store transition
             for env_idx in range(self.config.num_envs):
                 transition = {
-                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in self.mlp_keys + self.cnn_keys},
+                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in all_keys},
                     'action': actions[step, env_idx].cpu().numpy(),
                     'reward': rewards[step, env_idx].cpu().numpy(),
-                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in self.mlp_keys + self.cnn_keys},
+                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in all_keys},
                     'done': next_done[env_idx].cpu().numpy()
                 }
                 transitions.append(transition)
