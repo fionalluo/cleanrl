@@ -147,6 +147,36 @@ def wrap_env(env, config):
 
     return env
 
+def process_video_frames(frames, key):
+    """Process frames for video logging following exact format requirements."""
+    if len(frames.shape) == 3:  # Single image [H, W, C]
+        # Check if the last dimension is 3 (RGB image) and the maximum value is greater than 1
+        if frames.shape[-1] == 3 and np.max(frames) > 1:
+            return frames  # Directly pass the image without modification
+        else:
+            frames = np.clip(255 * frames, 0, 255).astype(np.uint8)
+            frames = np.transpose(frames, [2, 0, 1])
+            return frames
+    elif len(frames.shape) == 4:  # Video [T, H, W, C]
+        # Sanity check that the channels dimension is last
+        assert frames.shape[3] in [1, 3, 4], f"Invalid shape: {frames.shape}"
+        is_depth = frames.shape[3] == 1
+        frames = np.transpose(frames, [0, 3, 1, 2])
+        # If the video is a float, convert it to uint8
+        if np.issubdtype(frames.dtype, np.floating):
+            if is_depth:
+                frames = frames - frames.min()
+                # Scale by 2 mean distances of near rays
+                frames = frames / (2 * frames[frames <= 1].mean())
+                # Scale to [0, 255]
+                frames = np.clip(frames, 0, 1)
+                # repeat channel dimension 3 times
+                frames = np.repeat(frames, 3, axis=1)
+            frames = np.clip(255 * frames, 0, 255).astype(np.uint8)
+        return frames
+    else:
+        raise ValueError(f"Unexpected shape for {key}: {frames.shape}")
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     parsed_args = parse_args()
@@ -197,24 +227,44 @@ def main(argv=None):
             monitor_gym=False,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
-    )
     
     # Training loop
     global_step = 0
     start_time = time.time()
     
-    # Initialize episode tracking buffers
-    episode_returns = np.zeros(config.num_envs)
-    episode_lengths = np.zeros(config.num_envs)
-    
     # Initialize video logging buffers
-    video_frames = {key: [] for key in config.log_keys_video}
+    teacher_video_frames = {key: [] for key in config.log_keys_video}
+    student_video_frames = {key: [] for key in config.log_keys_video}
     last_video_log = 0
     video_log_interval = 10000  # Log a video every 10k steps
+    
+    # Initialize episode tracking buffers
+    teacher_episode_returns = np.zeros(config.num_envs)
+    teacher_episode_lengths = np.zeros(config.num_envs)
+    student_episode_returns = np.zeros(config.num_envs)
+    student_episode_lengths = np.zeros(config.num_envs)
+    
+    # Initialize observation storage
+    obs = {}
+    # Get union of teacher and student keys
+    all_keys = set(teacher.mlp_keys + teacher.cnn_keys + student.mlp_keys + student.cnn_keys)
+    for key in all_keys:
+        if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
+            obs[key] = torch.zeros((config.num_steps, config.num_envs) + envs.obs_space[key].shape).to(device)
+        else:  # Non-image observations
+            size = np.prod(envs.obs_space[key].shape)
+            obs[key] = torch.zeros((config.num_steps, config.num_envs, size)).to(device)
+    
+    # Initialize action storage with correct shape for one-hot if discrete
+    if teacher.is_discrete:
+        action_shape = (config.num_steps, config.num_envs, envs.act_space['action'].shape[0])
+    else:
+        action_shape = (config.num_steps, config.num_envs) + envs.act_space['action'].shape
+    actions = torch.zeros(action_shape).to(device)
+    logprobs = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    rewards = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    dones = torch.zeros((config.num_steps, config.num_envs)).to(device)
+    values = torch.zeros((config.num_steps, config.num_envs)).to(device)
     
     # Initialize actions with zeros and reset flags
     action_shape = envs.act_space['action'].shape
@@ -222,33 +272,205 @@ def main(argv=None):
     
     acts = {
         'action': np.zeros((num_envs,) + action_shape, dtype=np.float32),
-        'reset': np.ones(num_envs, dtype=bool)  # Reset all environments initially
+        'reset': np.ones(num_envs, dtype=bool)
     }
     
     # Get initial observations
     obs_dict = envs.step(acts)
     next_obs = {}
-    for key in teacher.mlp_keys + teacher.cnn_keys:
+    for key in all_keys:
         next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
     next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
     
     # Main training loop
-    for iteration in range(1, config.total_timesteps // (config.num_envs * config.num_steps) + 1):
+    num_iterations = config.total_timesteps // (config.num_envs * config.num_steps)
+    for iteration in range(1, num_iterations + 1):
         if config.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / (config.total_timesteps // (config.num_envs * config.num_steps))
+            frac = 1.0 - (iteration - 1.0) / num_iterations
             lrnow = frac * config.learning_rate
             teacher_optimizer.param_groups[0]["lr"] = lrnow
             student_optimizer.param_groups[0]["lr"] = lrnow
         
-        # 1. Teacher collects transitions
-        teacher_transitions = teacher.collect_transitions(envs, config.num_steps)
+        # 1. Collect experience using teacher policy
+        for step in range(0, config.num_steps):
+            global_step += config.num_envs
+            
+            # Store observations
+            for key in all_keys:
+                obs[key][step] = next_obs[key]
+            dones[step] = next_done
+            
+            # Get action from teacher policy
+            with torch.no_grad():
+                action, logprob, _, value = teacher.get_action_and_value(next_obs)
+                values[step] = value.flatten()
+            actions[step] = action
+            logprobs[step] = logprob
+            
+            # Step environment
+            action_np = action.cpu().numpy()
+            if teacher.is_discrete:
+                action_np = action_np.reshape(num_envs, -1)
+            
+            acts = {
+                'action': action_np,
+                'reset': next_done.cpu().numpy()
+            }
+            
+            obs_dict = envs.step(acts)
+            
+            # Store raw observations for video logging before any processing
+            for key in config.log_keys_video:
+                if key in obs_dict:
+                    teacher_video_frames[key].append(obs_dict[key][0].copy())
+            
+            # Process observations
+            for key in all_keys:
+                next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
+            next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
+            rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(device).view(-1)
+            
+            # Store transition in replay buffer
+            for env_idx in range(config.num_envs):
+                transition = {
+                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in all_keys},
+                    'action': actions[step, env_idx].cpu().numpy(),
+                    'reward': rewards[step, env_idx].cpu().numpy(),
+                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in all_keys},
+                    'done': next_done[env_idx].cpu().numpy()
+                }
+                replay_buffer.add(transition)
+            
+            # Update episode tracking
+            for env_idx in range(config.num_envs):
+                teacher_episode_returns[env_idx] += obs_dict['reward'][env_idx]
+                teacher_episode_lengths[env_idx] += 1
+                
+                if obs_dict['is_last'][env_idx]:
+                    print(f"global_step={global_step}, teacher_episode_return={teacher_episode_returns[env_idx]}, teacher_episode_length={teacher_episode_lengths[env_idx]}")
+                    
+                    if config.track:
+                        wandb.log({
+                            "charts/teacher_episode_return": teacher_episode_returns[env_idx],
+                            "charts/teacher_episode_length": teacher_episode_lengths[env_idx],
+                            "metrics/global_step": global_step,
+                        })
+                    
+                    # Log video if enough steps have passed
+                    if global_step - last_video_log >= video_log_interval:
+                        for key in config.log_keys_video:
+                            if teacher_video_frames[key]:
+                                # Convert frames to video
+                                frames = np.stack(teacher_video_frames[key])
+                                # Process frames using the exact logic
+                                processed_frames = process_video_frames(frames, key)
+                                
+                                if config.track:
+                                    wandb.log({
+                                        f"videos/teacher_{key}": wandb.Video(
+                                            processed_frames,
+                                            fps=10,
+                                            format="gif"
+                                        )
+                                    }, step=global_step)
+                        
+                        # Reset video frames and update last log
+                        teacher_video_frames = {key: [] for key in config.log_keys_video}
+                        last_video_log = global_step
+                    
+                    # Reset episode tracking
+                    teacher_episode_returns[env_idx] = 0
+                    teacher_episode_lengths[env_idx] = 0
         
-        # 2. Store transitions in replay buffer
-        for transition in teacher_transitions:
-            replay_buffer.add(transition)
+        # 2. Compute advantages for PPO
+        with torch.no_grad():
+            next_value = teacher.get_value(next_obs).reshape(1, -1)
+            advantages = torch.zeros_like(rewards).to(device)
+            lastgaelam = 0
+            for t in reversed(range(config.num_steps)):
+                if t == config.num_steps - 1:
+                    nextnonterminal = 1.0 - next_done
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - dones[t + 1]
+                    nextvalues = values[t + 1]
+                delta = rewards[t] + config.gamma * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + config.gamma * config.gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + values
         
-        # 3. Update teacher policy using PPO
-        # TODO: Implement PPO update for teacher
+        # 3. PPO update for teacher
+        batch_size = int(config.num_envs * config.num_steps)
+        minibatch_size = int(batch_size // config.num_minibatches)
+        b_inds = np.arange(batch_size)
+        clipfracs = []
+        
+        for epoch in range(config.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, batch_size, minibatch_size):
+                end = start + minibatch_size
+                mb_inds = b_inds[start:end]
+                
+                # Create minibatch observations dictionary
+                mb_obs = {}
+                for key in all_keys:
+                    mb_obs[key] = obs[key].reshape(-1, *obs[key].shape[2:])[mb_inds]
+                
+                # Get new action probabilities and values
+                _, newlogprob, entropy, newvalue = teacher.get_action_and_value(
+                    mb_obs, actions.reshape(-1, *actions.shape[2:])[mb_inds]
+                )
+                
+                # Calculate PPO loss
+                logratio = newlogprob - logprobs.reshape(-1)[mb_inds]
+                ratio = logratio.exp()
+                
+                with torch.no_grad():
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [((ratio - 1.0).abs() > config.clip_coef).float().mean().item()]
+                
+                mb_advantages = advantages.reshape(-1)[mb_inds]
+                if config.norm_adv:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                
+                # Policy loss
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - config.clip_coef, 1 + config.clip_coef)
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                
+                # Value loss
+                newvalue = newvalue.view(-1)
+                if config.clip_vloss:
+                    v_loss_unclipped = (newvalue - returns.reshape(-1)[mb_inds]) ** 2
+                    v_clipped = values.reshape(-1)[mb_inds] + torch.clamp(
+                        newvalue - values.reshape(-1)[mb_inds],
+                        -config.clip_coef,
+                        config.clip_coef,
+                    )
+                    v_loss_clipped = (v_clipped - returns.reshape(-1)[mb_inds]) ** 2
+                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                    v_loss = 0.5 * v_loss_max.mean()
+                else:
+                    v_loss = 0.5 * ((newvalue - returns.reshape(-1)[mb_inds]) ** 2).mean()
+                
+                # Entropy loss
+                entropy_loss = entropy.mean()
+                
+                # Total loss
+                loss = pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef
+                
+                # Optimize teacher
+                teacher_optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(teacher.parameters(), config.max_grad_norm)
+                teacher_optimizer.step()
+            
+            # Early stopping
+            target_kl = config.target_kl
+            if isinstance(target_kl, str) and target_kl.lower() == 'none':
+                target_kl = None
+            if target_kl is not None and approx_kl > float(target_kl):
+                break
         
         # 4. Student learns from teacher via BC
         if len(replay_buffer) >= config.bc.batch_size:
@@ -256,7 +478,7 @@ def main(argv=None):
                 replay_buffer,
                 config.bc.num_steps,
                 config.bc.batch_size,
-                writer,
+                None,  # Remove writer parameter
                 global_step
             )
             
@@ -267,17 +489,64 @@ def main(argv=None):
                     "bc/action_diff": bc_metrics.get('action_diff', None),
                     "metrics/global_step": global_step,
                 })
-        
-        # 5. Optionally: Student fine-tunes with PPO
-        # TODO: Implement PPO update for student
-        
-        # Update global step
-        global_step += config.num_envs * config.num_steps
+            
+            # Evaluate student policy
+            student_transitions = student.collect_transitions(envs, config.num_steps)
+            for transition in student_transitions:
+                for env_idx in range(config.num_envs):
+                    student_episode_returns[env_idx] += transition['reward']
+                    student_episode_lengths[env_idx] += 1
+                    
+                    if transition['done']:
+                        print(f"global_step={global_step}, student_episode_return={student_episode_returns[env_idx]}, student_episode_length={student_episode_lengths[env_idx]}")
+                        
+                        if config.track:
+                            wandb.log({
+                                "charts/student_episode_return": student_episode_returns[env_idx],
+                                "charts/student_episode_length": student_episode_lengths[env_idx],
+                                "metrics/global_step": global_step,
+                            })
+                        
+                        # Log video if enough steps have passed
+                        if global_step - last_video_log >= video_log_interval:
+                            for key in config.log_keys_video:
+                                if key in transition['obs']:
+                                    student_video_frames[key].append(transition['obs'][key])
+                            
+                            for key in config.log_keys_video:
+                                if student_video_frames[key]:
+                                    # Convert frames to video
+                                    frames = np.stack(student_video_frames[key])
+                                    # Process frames using the exact logic
+                                    processed_frames = process_video_frames(frames, key)
+                                    
+                                    if config.track:
+                                        wandb.log({
+                                            f"videos/student_{key}": wandb.Video(
+                                                processed_frames,
+                                                fps=10,
+                                                format="gif"
+                                            )
+                                        }, step=global_step)
+                            
+                            # Reset video frames and update last log
+                            student_video_frames = {key: [] for key in config.log_keys_video}
+                            last_video_log = global_step
+                        
+                        # Reset episode tracking
+                        student_episode_returns[env_idx] = 0
+                        student_episode_lengths[env_idx] = 0
         
         # Log metrics
         if config.track:
             wandb.log({
                 "charts/learning_rate": teacher_optimizer.param_groups[0]["lr"],
+                "losses/policy_loss": pg_loss.item(),
+                "losses/value_loss": v_loss.item(),
+                "losses/entropy": entropy_loss.item(),
+                "losses/old_approx_kl": old_approx_kl.item(),
+                "losses/approx_kl": approx_kl.item(),
+                "losses/clipfrac": np.mean(clipfracs),
                 "charts/SPS": int(global_step / (time.time() - start_time)),
                 "metrics/global_step": global_step,
             })
@@ -291,7 +560,6 @@ def main(argv=None):
         print(f"model saved to {model_path}")
 
     envs.close()
-    writer.close()
 
 if __name__ == "__main__":
     main()
