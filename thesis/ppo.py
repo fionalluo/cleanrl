@@ -243,6 +243,41 @@ class Agent(nn.Module):
                 action = probs.sample()
             return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(latent)
 
+def process_video_frames(frames, key):
+    """Process frames for video logging following exact format requirements."""
+    print(f"Processing {key} with shape {frames.shape}")
+    print(f"Max value: {np.max(frames)}")
+    
+    if len(frames.shape) == 3:  # Single image [H, W, C]
+        print(f"Single image: {key}, {frames.shape}")
+        print(f"Last dim: {frames.shape[-1]}")
+        # Check if the last dimension is 3 (RGB image) and the maximum value is greater than 1
+        if frames.shape[-1] == 3 and np.max(frames) > 1:
+            return frames  # Directly pass the image without modification
+        else:
+            print(f"Converting image: {key}, {frames.shape}")
+            frames = np.clip(255 * frames, 0, 255).astype(np.uint8)
+            frames = np.transpose(frames, [2, 0, 1])
+            return frames
+    elif len(frames.shape) == 4:  # Video [T, H, W, C]
+        # Sanity check that the channels dimension is last
+        assert frames.shape[3] in [1, 3, 4], f"Invalid shape: {frames.shape}"
+        is_depth = frames.shape[3] == 1
+        frames = np.transpose(frames, [0, 3, 1, 2])
+        # If the video is a float, convert it to uint8
+        if np.issubdtype(frames.dtype, np.floating):
+            if is_depth:
+                frames = frames - frames.min()
+                # Scale by 2 mean distances of near rays
+                frames = frames / (2 * frames[frames <= 1].mean())
+                # Scale to [0, 255]
+                frames = np.clip(frames, 0, 1)
+                # repeat channel dimension 3 times
+                frames = np.repeat(frames, 3, axis=1)
+            frames = np.clip(255 * frames, 0, 255).astype(np.uint8)
+        return frames
+    else:
+        raise ValueError(f"Unexpected shape for {key}: {frames.shape}")
 
 def main(envs, config, seed: int = 0):
     batch_size = int(config.num_envs * config.num_steps)
@@ -260,7 +295,7 @@ def main(envs, config, seed: int = 0):
             sync_tensorboard=True,
             config=vars(config),
             name=run_name,
-            monitor_gym=True,
+            monitor_gym=False,  # Disable automatic gym monitoring
             save_code=True,
         )
     writer = SummaryWriter(f"runs/{run_name}")
@@ -304,6 +339,11 @@ def main(envs, config, seed: int = 0):
     # Initialize episode tracking buffers
     episode_returns = np.zeros(config.num_envs)
     episode_lengths = np.zeros(config.num_envs)
+    
+    # Initialize video logging buffers
+    video_frames = {key: [] for key in config.log_keys_video}
+    last_video_log = 0
+    video_log_interval = 10000  # Log a video every 10k steps
     
     action_shape = envs.act_space['action'].shape
     num_envs = config.num_envs
@@ -351,6 +391,12 @@ def main(envs, config, seed: int = 0):
             }
             
             obs_dict = envs.step(acts)
+            # Store raw observations for video logging before any processing
+            for key in config.log_keys_video:
+                if key in obs_dict:
+                    video_frames[key].append(obs_dict[key][0].copy())  # Store raw observation
+            
+            # Process observations for the agent
             for key in agent.mlp_keys + agent.cnn_keys:
                 next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
@@ -372,6 +418,29 @@ def main(envs, config, seed: int = 0):
                             "charts/episode_length": episode_lengths[env_idx],
                             "metrics/global_step": global_step,
                         })
+
+                    # Log video if enough steps have passed
+                    if global_step - last_video_log >= video_log_interval:
+                        for key in config.log_keys_video:
+                            if video_frames[key]:
+                                # Convert frames to video
+                                frames = np.stack(video_frames[key])
+                                # Process frames using the exact logic
+                                processed_frames = process_video_frames(frames, key)
+                                
+                                if config.track:
+                                    wandb.log({
+                                        f"videos/{key}": wandb.Video(
+                                            processed_frames,
+                                            fps=10,
+                                            format="gif"
+                                        )
+                                    }, step=global_step)
+                                writer.add_video(f"videos/{key}", processed_frames[None], global_step, fps=10)
+                        
+                        # Reset video frames and update last log
+                        video_frames = {key: [] for key in config.log_keys_video}
+                        last_video_log = global_step
 
                     # Reset for the next episode
                     episode_returns[env_idx] = 0
@@ -511,7 +580,7 @@ def main(envs, config, seed: int = 0):
         # Print recent rewards (last 10 steps)
         recent_steps = min(10, step + 1)  # Handle case where we haven't collected 10 steps yet
         recent_rewards = rewards[step-recent_steps+1:step+1].mean().item()
-        print(f"Global step: {global_step}, Recent rewards: {recent_rewards:.2f}")
+        # print(f"Global step: {global_step}, Recent rewards: {recent_rewards:.2f}")
 
     if config.save_model:
         model_path = f"runs/{run_name}/{exp_name}.cleanrl_model"

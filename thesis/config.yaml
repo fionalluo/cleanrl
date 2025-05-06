@@ -4,7 +4,7 @@ defaults:
   torch_deterministic: true
   cuda: true
   track: true
-  wandb_project_name: "thesis-cleanrl"
+  wandb_project_name: "cleanrl-ppo"
   wandb_entity: 'fionalluo'
   capture_video: false
 
@@ -27,6 +27,9 @@ defaults:
   target_kl: None
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}
   keys: {mlp_keys: '.*', cnn_keys: '.*'}
+
+  save_model: false
+  log_keys_video: [image]
 
   # PPO Encoder Architecture
   encoder:
@@ -57,7 +60,7 @@ defaults:
   #   fan: avg
   #   symlog_inputs: True
   #   minres: 4
-  
+
   env:
     atari: {size: [64, 64], repeat: 4, sticky: True, gray: False, actions: all, lives: unused, noops: 0, resize: opencv}
     dmlab: {size: [64, 64], repeat: 4, episodic: True}
@@ -102,6 +105,7 @@ gymnasium_blindpick:
   total_timesteps: 50000
   num_envs: 4
   num_steps: 128
+  log_keys_video: [camera_front]
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}
   keys: {mlp_keys: '.*', cnn_keys: '^$'}
   exp_name: "blindpick"
