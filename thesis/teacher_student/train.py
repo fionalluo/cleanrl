@@ -668,33 +668,54 @@ def main(argv=None):
                     "metrics/global_step": global_step,
                 })
                 
-                # Log one video each for teacher and student
-                for key in teacher_eval_metrics['video_frames'].keys():
-                    # Log teacher video
-                    if teacher_eval_metrics['video_frames'][key]:
-                        frames = np.stack(teacher_eval_metrics['video_frames'][key])
-                        processed_frames = process_video_frames(frames, key)
+                # Log videos every video_log_interval evaluations
+                eval_count = global_step // (config.eval.eval_interval * config.num_envs)
+                if eval_count % config.eval.video_log_interval == 0:
+                    # Teacher video
+                    if 'image' in teacher_eval_metrics['video_frames'] and teacher_eval_metrics['video_frames']['image']:
+                        frames = np.stack(teacher_eval_metrics['video_frames']['image'])
+                        processed_frames = process_video_frames(frames, 'image')
                         wandb.log({
-                            f"videos/teacher_{key}": wandb.Video(
+                            "videos/teacher_image": wandb.Video(
                                 processed_frames,
                                 fps=10,
                                 format="gif"
                             )
                         }, step=global_step)
-                        break  # Only log one video
                     
-                    # Log student video
-                    if student_eval_metrics['video_frames'][key]:
-                        frames = np.stack(student_eval_metrics['video_frames'][key])
-                        processed_frames = process_video_frames(frames, key)
+                    if 'heatmap' in teacher_eval_metrics['video_frames'] and teacher_eval_metrics['video_frames']['heatmap']:
+                        frames = np.stack(teacher_eval_metrics['video_frames']['heatmap'])
+                        processed_frames = process_video_frames(frames, 'heatmap')
                         wandb.log({
-                            f"videos/student_{key}": wandb.Video(
+                            "videos/teacher_heatmap": wandb.Video(
                                 processed_frames,
                                 fps=10,
                                 format="gif"
                             )
                         }, step=global_step)
-                        break  # Only log one video
+                    
+                    # Student video
+                    if 'image' in student_eval_metrics['video_frames'] and student_eval_metrics['video_frames']['image']:
+                        frames = np.stack(student_eval_metrics['video_frames']['image'])
+                        processed_frames = process_video_frames(frames, 'image')
+                        wandb.log({
+                            "videos/student_image": wandb.Video(
+                                processed_frames,
+                                fps=10,
+                                format="gif"
+                            )
+                        }, step=global_step)
+                    
+                    if 'heatmap' in student_eval_metrics['video_frames'] and student_eval_metrics['video_frames']['heatmap']:
+                        frames = np.stack(student_eval_metrics['video_frames']['heatmap'])
+                        processed_frames = process_video_frames(frames, 'heatmap')
+                        wandb.log({
+                            "videos/student_heatmap": wandb.Video(
+                                processed_frames,
+                                fps=10,
+                                format="gif"
+                            )
+                        }, step=global_step)
             
             last_eval = global_step
         
