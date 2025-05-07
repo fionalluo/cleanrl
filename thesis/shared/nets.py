@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 class ImageEncoderResnet(nn.Module):
 
-  def __init__(self, depth, blocks, resize, minres, output_dim=512, **kw):
+  def __init__(self, depth, blocks, resize, minres, output_dim=512, in_channels=None, **kw):
     super().__init__()  # This is crucial for PyTorch modules
     self._depth = depth
     self._blocks = blocks
@@ -15,11 +15,11 @@ class ImageEncoderResnet(nn.Module):
     self._minres = minres
     self._kw = kw
     self.output_dim = output_dim
+    self._in_channels = in_channels  # Store for later use
 
     # Create all layers upfront
-    self.initial_conv = nn.Conv2d(3, depth, 3, stride=1, padding=1)
-    nn.init.orthogonal_(self.initial_conv.weight)
-    nn.init.zeros_(self.initial_conv.bias)
+    # We'll initialize the conv layer in forward when we know the input shape
+    self.initial_conv = None
 
     # Create all other layers
     self.conv_layers = nn.ModuleDict()
@@ -32,7 +32,7 @@ class ImageEncoderResnet(nn.Module):
         s = 2 if i else 3
         k = 5 if i else 4
         self.conv_layers[f's{i}res'] = nn.Conv2d(depth * (2**i), depth * (2**(i+1)), k, stride=s, padding=k//2)
-      elif resize in ['mean', 'max']:
+      elif resize in ['mean', 'max', 'bilinear']:
         self.conv_layers[f's{i}res'] = nn.Conv2d(depth * (2**i), depth * (2**(i+1)), 3, stride=1, padding=1)
       
       # Residual blocks
@@ -54,6 +54,13 @@ class ImageEncoderResnet(nn.Module):
     )
 
   def forward(self, x):
+    # Initialize initial conv layer if not done yet
+    if self.initial_conv is None:
+      in_channels = x.shape[1]  # Get channels from input
+      self.initial_conv = nn.Conv2d(in_channels, self._depth, 3, stride=1, padding=1).to(x.device)
+      nn.init.orthogonal_(self.initial_conv.weight)
+      nn.init.zeros_(self.initial_conv.bias)
+
     stages = int(np.log2(x.shape[-2]) - np.log2(self._minres))
     depth = self._depth
     x = x.float() - 0.5  # Normalize input using PyTorch operations
@@ -75,6 +82,9 @@ class ImageEncoderResnet(nn.Module):
         N, C, H, W = x.shape
         x = x.reshape(N, C, H // 2, 2, W // 2, 2)
         x = x.max(dim=3)[0].max(dim=4)[0]
+      elif self._resize == 'bilinear':
+        x = self.conv_layers[f's{i}res'](x)
+        x = F.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=False)
       else:
         raise NotImplementedError(self._resize)
 

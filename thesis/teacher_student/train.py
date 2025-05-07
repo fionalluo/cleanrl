@@ -34,7 +34,6 @@ from embodied.core import Path, Flags, Config
 # Import teacher-student components
 from thesis.teacher_student.teacher import TeacherPolicy
 from thesis.teacher_student.student import StudentPolicy
-from thesis.teacher_student.replay_buffer import ReplayBuffer
 from thesis.teacher_student.bc import BehavioralCloning
 
 def dict_to_namespace(d):
@@ -306,13 +305,6 @@ def main(argv=None):
     teacher = TeacherPolicy(envs, config).to(device)
     student = StudentPolicy(envs, config).to(device)
     
-    replay_buffer = ReplayBuffer(
-        config.replay_buffer.capacity,
-        envs.obs_space,
-        config.full_keys,
-        config.keys
-    )
-    
     bc_trainer = BehavioralCloning(student, teacher, config)
     
     # Initialize optimizers
@@ -496,7 +488,6 @@ def main(argv=None):
                     'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in all_keys},
                     'done': next_done[env_idx].cpu().numpy()
                 }
-                replay_buffer.add(transition)
             
             # Update episode tracking
             for env_idx in range(config.num_envs):

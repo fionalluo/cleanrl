@@ -10,21 +10,21 @@ defaults:
 
   task: CartPole-v1
   total_timesteps: 500000
-  learning_rate: 2.5e-4
+  learning_rate: 3e-4  # Standard learning rate that works well across environments
   num_envs: 4
   num_steps: 128
-  anneal_lr: true
-  gamma: 0.99
-  gae_lambda: 0.95
+  anneal_lr: true  # Learning rate annealing helps with convergence
+  gamma: 0.99  # Standard discount factor
+  gae_lambda: 0.95  # Standard GAE lambda
   num_minibatches: 4
   update_epochs: 4
-  norm_adv: true
-  clip_coef: 0.2
-  clip_vloss: true
-  ent_coef: 0.01
-  vf_coef: 0.5
-  max_grad_norm: 0.5
-  target_kl: None
+  norm_adv: true  # Normalizing advantages is important for stability
+  clip_coef: 0.2  # Standard PPO clip coefficient
+  clip_vloss: true  # Clipping value loss helps with stability
+  ent_coef: 0.01  # Moderate entropy coefficient for exploration
+  vf_coef: 0.5  # Standard value function coefficient
+  max_grad_norm: 0.5  # Standard gradient clipping
+  target_kl: None  # Remove target KL to allow faster training
 
   # Teacher and student observation keys
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}  # Teacher sees everything
@@ -56,11 +56,6 @@ defaults:
     num_steps: 256  # Reduced number of steps since we're doing more frequent updates
     max_grad_norm: 0.5
 
-  # Replay Buffer settings
-  replay_buffer:
-    capacity: 100000
-    on_policy: true  # Whether to use on-policy teacher data
-
   env:
     atari: {size: [64, 64], repeat: 4, sticky: True, gray: False, actions: all, lives: unused, noops: 0, resize: opencv}
     dmlab: {size: [64, 64], repeat: 4, episodic: True}
@@ -74,7 +69,7 @@ defaults:
     eval_interval: 1000  # Evaluate every 1000 steps
     num_eval_episodes: 10  # Number of episodes to evaluate
     eval_envs: 4  # Number of parallel environments for evaluation
-    video_log_interval: 10  # Log videos every 10 evaluation calls
+    video_log_interval: 1  # Log videos every 10 evaluation calls
 
 # ====================
 # Named Configs
@@ -89,20 +84,21 @@ cartpole_small:
 
 gymnasium_bandit5:
   task: gymnasium_BanditPathEnv5-v0
-  total_timesteps: 50000
+  total_timesteps: 5000
   num_envs: 4
   num_steps: 128
   eval:
-    eval_interval: 1000
+    eval_interval: 100
     num_eval_episodes: 10
     eval_envs: 4
+    video_log_interval: 2
   full_keys: {mlp_keys: '\b(target|neighbors|distance|position)\b', cnn_keys: '^$'}
-  keys: {mlp_keys: '\b(target_unprivileged|neighbors_unprivileged|position)\b', cnn_keys: '^$'}
+  keys: {mlp_keys: '\b(neighbors_unprivileged|position)\b', cnn_keys: '^$'}
   exp_name: "bandit5_distill"
 
 gymnasium_lavatrail8:
   task: gymnasium_LavaTrail8x8-v0
-  total_timesteps: 50000
+  total_timesteps: 40000
   num_envs: 4
   num_steps: 128
   eval:
@@ -115,10 +111,15 @@ gymnasium_lavatrail8:
 
 gymnasium_blindpick:
   task: gymnasium_FOFixedGripper2DBlind7cmPick-v0
-  total_timesteps: 50000
+  total_timesteps: 200000
   num_envs: 4
   num_steps: 128
   log_keys_video: [camera_front]
+  eval:
+    eval_interval: 1000
+    num_eval_episodes: 10
+    eval_envs: 4
+    video_log_interval: 1
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}
   keys: {mlp_keys: '.*', cnn_keys: '^$'}
   exp_name: "blindpick_distill"
