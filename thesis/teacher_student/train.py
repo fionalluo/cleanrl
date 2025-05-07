@@ -474,19 +474,9 @@ def main(argv=None):
         
         # 4. Student learns from teacher via BC
         if len(replay_buffer) >= config.bc.batch_size:
-            # Clear the replay buffer to only use new trajectories
-            replay_buffer.buffer.clear()
-            
-            # Collect trajectories from student policy
-            student_transitions = student.collect_transitions(envs, config.num_steps)
-            
-            # Add student trajectories to replay buffer
-            for transition in student_transitions:
-                replay_buffer.add(transition)
-            
             # Train BC on student trajectories
             bc_metrics = bc_trainer.train(
-                replay_buffer,
+                envs,
                 config.bc.num_steps,
                 config.bc.batch_size,
                 None,  # Remove writer parameter

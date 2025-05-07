@@ -244,48 +244,6 @@ class StudentPolicy(BaseAgent):
                 action = probs.sample()
             return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(latent)
 
-    def train_bc(self, replay_buffer, batch_size, optimizer, teacher_policy):
-        """Train the student policy using behavioral cloning.
-        
-        Args:
-            replay_buffer: ReplayBuffer containing student trajectories
-            batch_size: Batch size for training
-            optimizer: Optimizer for the student policy
-            teacher_policy: Teacher policy to get actions for BC loss
-            
-        Returns:
-            dict containing training metrics
-        """
-        # Sample batch from replay buffer
-        batch = replay_buffer.sample(batch_size)
-        
-        # Get student's action predictions
-        _, student_log_probs, _, _ = self.get_action_and_value(batch['partial_obs'])
-        
-        # Get teacher's actions on the same observations
-        with torch.no_grad():
-            teacher_actions, _, _, _ = teacher_policy.get_action_and_value(batch['full_obs'])
-        
-        # Compute loss
-        if self.is_discrete:
-            # For discrete actions, use cross entropy loss
-            loss = -student_log_probs.mean()
-        else:
-            # For continuous actions, use MSE loss
-            student_actions = self.actor_mean(self.encode_observations(batch['partial_obs']))
-            loss = ((student_actions - teacher_actions) ** 2).mean()
-        
-        # Update policy
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        return {
-            'bc_loss': loss.item(),
-            'student_actions': student_actions.detach() if not self.is_discrete else None,
-            'teacher_actions': teacher_actions.detach()
-        }
-    
     def collect_transitions(self, envs, num_steps):
         """Collect transitions from the environment using the student policy.
         

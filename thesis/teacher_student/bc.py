@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np
 
 class BehavioralCloning:
     def __init__(self, student_policy, teacher_policy, config):
@@ -64,17 +65,21 @@ class BehavioralCloning:
             nn.utils.clip_grad_norm_(self.student.parameters(), self.config.bc.max_grad_norm)
         self.optimizer.step()
         
-        return {
-            'bc_loss': loss.item(),
-            'student_actions': student_actions.detach() if not self.student.is_discrete else None,
-            'teacher_actions': teacher_actions.detach()
+        # Convert tensors to scalars for metrics
+        metrics = {
+            'bc_loss': loss.item()
         }
+        
+        if not self.student.is_discrete:
+            metrics['action_diff'] = (student_actions - teacher_actions).abs().mean().item()
+        
+        return metrics
     
-    def train(self, replay_buffer, num_steps, batch_size, writer=None, global_step=0):
+    def train(self, envs, num_steps, batch_size, writer=None, global_step=0):
         """Train the student policy using BC for a number of steps.
         
         Args:
-            replay_buffer: ReplayBuffer containing student trajectories
+            envs: Vectorized environment
             num_steps: Number of training steps
             batch_size: Batch size for training
             writer: TensorBoard writer for logging
@@ -85,13 +90,87 @@ class BehavioralCloning:
         """
         metrics = {
             'bc_loss': [],
-            'student_actions': [],
-            'teacher_actions': []
+            'action_diff': [] if not self.student.is_discrete else None
         }
         
+        # Get union of teacher and student keys
+        all_keys = set(self.teacher.mlp_keys + self.teacher.cnn_keys + self.student.mlp_keys + self.student.cnn_keys)
+        
+        # Initialize observation storage
+        obs = {}
+        for key in all_keys:
+            if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
+                obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.student.device)
+            else:  # Non-image observations
+                size = np.prod(envs.obs_space[key].shape)
+                obs[key] = torch.zeros((num_steps, self.config.num_envs, size)).to(self.student.device)
+        
+        # Initialize actions with zeros and reset flags
+        action_shape = envs.act_space['action'].shape
+        acts = {
+            'action': np.zeros((self.config.num_envs,) + action_shape, dtype=np.float32),
+            'reset': np.ones(self.config.num_envs, dtype=bool)
+        }
+        
+        # Get initial observations
+        obs_dict = envs.step(acts)
+        next_obs = {}
+        for key in all_keys:
+            next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.student.device)
+        next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.student.device)
+        
+        # Collect trajectories
         for step in range(num_steps):
-            # Sample batch from replay buffer
-            batch = replay_buffer.sample(batch_size)
+            # Store observations
+            for key in all_keys:
+                obs[key][step] = next_obs[key]
+            
+            # Get action from student policy
+            with torch.no_grad():
+                action, _, _, _ = self.student.get_action_and_value(next_obs)
+            
+            # Step environment
+            action_np = action.cpu().numpy()
+            if self.student.is_discrete:
+                action_np = action_np.reshape(self.config.num_envs, -1)
+            
+            acts = {
+                'action': action_np,
+                'reset': next_done.cpu().numpy()
+            }
+            
+            obs_dict = envs.step(acts)
+            
+            # Process observations
+            for key in all_keys:
+                next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.student.device)
+            next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.student.device)
+        
+        # Calculate total number of samples
+        total_samples = num_steps * self.config.num_envs
+        
+        # Train on collected trajectories
+        for start_idx in range(0, total_samples, batch_size):
+            end_idx = min(start_idx + batch_size, total_samples)
+            current_batch_size = end_idx - start_idx
+            
+            # Create batch
+            batch = {
+                'partial_obs': {},
+                'full_obs': {}
+            }
+            
+            # Filter observations for student and teacher
+            for key in all_keys:
+                # Reshape observations to [total_samples, *shape]
+                flat_obs = obs[key].reshape(total_samples, *obs[key].shape[2:])
+                # Get current batch
+                batch_obs = flat_obs[start_idx:end_idx]
+                
+                if key in self.student.mlp_keys + self.student.cnn_keys:
+                    batch['partial_obs'][key] = batch_obs
+                if key in self.teacher.mlp_keys + self.teacher.cnn_keys:
+                    batch['full_obs'][key] = batch_obs
             
             # Perform training step
             step_metrics = self.train_step(batch)
@@ -103,12 +182,10 @@ class BehavioralCloning:
             
             # Log to TensorBoard
             if writer is not None:
-                writer.add_scalar('bc/loss', step_metrics['bc_loss'], global_step + step)
+                writer.add_scalar('bc/loss', step_metrics['bc_loss'], global_step + start_idx)
                 
                 if not self.student.is_discrete:
-                    writer.add_scalar('bc/action_diff', 
-                                    (step_metrics['student_actions'] - step_metrics['teacher_actions']).abs().mean().item(),
-                                    global_step + step)
+                    writer.add_scalar('bc/action_diff', step_metrics['action_diff'], global_step + start_idx)
         
         # Compute average metrics
         avg_metrics = {

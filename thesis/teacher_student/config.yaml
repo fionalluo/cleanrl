@@ -51,9 +51,9 @@ defaults:
 
   # Behavioral Cloning settings
   bc:
-    learning_rate: 1e-4
-    batch_size: 64
-    num_steps: 1000  # Number of BC steps per PPO update
+    learning_rate: 3e-4  # Increased learning rate for faster convergence
+    batch_size: 128  # Larger batch size for better GPU utilization
+    num_steps: 256  # Reduced number of steps since we're doing more frequent updates
     max_grad_norm: 0.5
 
   # Replay Buffer settings
