@@ -68,6 +68,12 @@ defaults:
     dmc: {size: [64, 64], repeat: 2, camera: -1}
     loconav: {size: [64, 64], repeat: 2, camera: -1}
     gym: {obs_key: state}
+  
+  # Evaluation settings
+  eval:
+    eval_interval: 10000  # Evaluate every 10k steps
+    num_eval_episodes: 10  # Number of episodes to evaluate on
+    eval_envs: 4  # Number of parallel environments for evaluation
 
 # ====================
 # Named Configs
@@ -85,6 +91,10 @@ gymnasium_bandit5:
   total_timesteps: 50000
   num_envs: 4
   num_steps: 128
+  eval:
+    eval_interval: 1000
+    num_eval_episodes: 10
+    eval_envs: 4
   full_keys: {mlp_keys: '\b(target|neighbors|distance|position)\b', cnn_keys: '^$'}
   keys: {mlp_keys: '\b(target_unprivileged|neighbors_unprivileged|position)\b', cnn_keys: '^$'}
   exp_name: "bandit5_distill"
@@ -94,6 +104,10 @@ gymnasium_lavatrail8:
   total_timesteps: 50000
   num_envs: 4
   num_steps: 128
+  eval:
+    eval_interval: 100
+    num_eval_episodes: 10
+    eval_envs: 4
   full_keys: {mlp_keys: '\b(neighbors|last_action|position)\b', cnn_keys: '^$'}
   keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
   exp_name: "lavatrail8_distill"

@@ -27,7 +27,7 @@ class BehavioralCloning:
             dict containing training metrics
         """
         # Get student's action predictions using partial observations
-        _, student_log_probs, _, _ = self.student.get_action_and_value(batch['partial_obs'])
+        student_actions, student_log_probs, _, _ = self.student.get_action_and_value(batch['partial_obs'])
         
         # Get teacher's actions using full observations
         with torch.no_grad():
@@ -52,7 +52,12 @@ class BehavioralCloning:
         # Compute loss
         if self.student.is_discrete:
             # For discrete actions, use cross entropy loss
-            loss = -student_log_probs.mean()
+            # Convert teacher's one-hot actions to class indices
+            teacher_action_indices = teacher_actions.argmax(dim=1)
+            # Get student's logits
+            student_logits = self.student.actor(self.student.encode_observations(batch['partial_obs']))
+            # Compute cross entropy loss
+            loss = nn.CrossEntropyLoss()(student_logits, teacher_action_indices)
         else:
             # For continuous actions, use MSE loss
             student_actions = self.student.actor_mean(self.student.encode_observations(batch['partial_obs']))
@@ -72,6 +77,11 @@ class BehavioralCloning:
         
         if not self.student.is_discrete:
             metrics['action_diff'] = (student_actions - teacher_actions).abs().mean().item()
+        else:
+            # For discrete actions, compute accuracy
+            student_action_indices = student_actions.argmax(dim=1)
+            accuracy = (student_action_indices == teacher_action_indices).float().mean().item()
+            metrics['action_accuracy'] = accuracy
         
         return metrics
     
@@ -90,7 +100,8 @@ class BehavioralCloning:
         """
         metrics = {
             'bc_loss': [],
-            'action_diff': [] if not self.student.is_discrete else None
+            'action_diff': [] if not self.student.is_discrete else None,
+            'action_accuracy': [] if self.student.is_discrete else None
         }
         
         # Get union of teacher and student keys
