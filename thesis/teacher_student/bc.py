@@ -3,12 +3,15 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+import torch.nn.functional as F
 
 class BehavioralCloning:
     def __init__(self, student_policy, teacher_policy, config):
         self.student = student_policy
         self.teacher = teacher_policy
         self.config = config
+        self.device = student_policy.device  # Get device from student policy
+        self.batch_size = config.bc.batch_size
         self.optimizer = optim.Adam(
             student_policy.parameters(),
             lr=config.bc.learning_rate,
@@ -85,123 +88,73 @@ class BehavioralCloning:
         
         return metrics
     
-    def train(self, envs, num_steps, batch_size, writer=None, global_step=0):
-        """Train the student policy using BC for a number of steps.
+    def train(self, transitions, num_epochs=1):
+        """Train the student policy using behavioral cloning.
         
         Args:
-            envs: Vectorized environment
-            num_steps: Number of training steps
-            batch_size: Batch size for training
-            writer: TensorBoard writer for logging
-            global_step: Global step counter for logging
+            transitions: List of transitions from teacher policy
+            num_epochs: Number of epochs to train for
             
         Returns:
-            dict containing training metrics
+            dict of training metrics
         """
-        metrics = {
-            'bc_loss': [],
-            'action_diff': [] if not self.student.is_discrete else None,
-            'action_accuracy': [] if self.student.is_discrete else None
-        }
-        
-        # Get union of teacher and student keys
-        all_keys = set(self.teacher.mlp_keys + self.teacher.cnn_keys + self.student.mlp_keys + self.student.cnn_keys)
-        
-        # Initialize observation storage
+        # Convert transitions to tensors
         obs = {}
-        for key in all_keys:
-            if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
-                obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.student.device)
-            else:  # Non-image observations
-                size = np.prod(envs.obs_space[key].shape)
-                obs[key] = torch.zeros((num_steps, self.config.num_envs, size)).to(self.student.device)
+        for key in self.student.mlp_keys:
+            obs[key] = torch.tensor(np.stack([t['obs'][key] for t in transitions]), device=self.device)
         
-        # Initialize actions with zeros and reset flags
-        action_shape = envs.act_space['action'].shape
-        acts = {
-            'action': np.zeros((self.config.num_envs,) + action_shape, dtype=np.float32),
-            'reset': np.ones(self.config.num_envs, dtype=bool)
+        actions = torch.tensor(np.stack([t['action'] for t in transitions]), device=self.device)
+        
+        # Get teacher actions
+        with torch.no_grad():
+            teacher_actions, _, _, _, _ = self.teacher.get_action_and_value(obs)
+        
+        # Train student
+        self.student.train()
+        total_loss = 0
+        num_batches = 0
+        
+        for epoch in range(num_epochs):
+            # Shuffle data
+            indices = torch.randperm(len(transitions))
+            obs_shuffled = {k: v[indices] for k, v in obs.items()}
+            actions_shuffled = actions[indices]
+            teacher_actions_shuffled = teacher_actions[indices]
+            
+            # Train in batches
+            for i in range(0, len(transitions), self.batch_size):
+                batch_obs = {k: v[i:i+self.batch_size] for k, v in obs_shuffled.items()}
+                batch_actions = actions_shuffled[i:i+self.batch_size]
+                batch_teacher_actions = teacher_actions_shuffled[i:i+self.batch_size]
+                
+                # Forward pass
+                student_actions, log_probs, entropy, value, imitation_losses = self.student.get_action_and_value(batch_obs, batch_actions)
+                
+                # Compute loss
+                if self.student.is_discrete:
+                    # For discrete actions, use cross entropy loss
+                    loss = -log_probs.mean()
+                else:
+                    # For continuous actions, use MSE loss
+                    loss = F.mse_loss(student_actions, batch_actions)
+                
+                # Add imitation loss if enabled
+                if self.config.encoder.student_to_teacher_imitation and self.config.encoder.student_to_teacher_lambda > 0:
+                    loss = loss + self.config.encoder.student_to_teacher_lambda * imitation_losses['student_to_teacher']
+                
+                # Backward pass
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                
+                total_loss += loss.item()
+                num_batches += 1
+        
+        # Compute metrics
+        metrics = {
+            'bc_loss': total_loss / num_batches,
+            'num_transitions': len(transitions),
+            'num_epochs': num_epochs
         }
         
-        # Get initial observations
-        obs_dict = envs.step(acts)
-        next_obs = {}
-        for key in all_keys:
-            next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.student.device)
-        next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.student.device)
-        
-        # Collect trajectories
-        for step in range(num_steps):
-            # Store observations
-            for key in all_keys:
-                obs[key][step] = next_obs[key]
-            
-            # Get action from student policy
-            with torch.no_grad():
-                action, _, _, _ = self.student.get_action_and_value(next_obs)
-            
-            # Step environment
-            action_np = action.cpu().numpy()
-            if self.student.is_discrete:
-                action_np = action_np.reshape(self.config.num_envs, -1)
-            
-            acts = {
-                'action': action_np,
-                'reset': next_done.cpu().numpy()
-            }
-            
-            obs_dict = envs.step(acts)
-            
-            # Process observations
-            for key in all_keys:
-                next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.student.device)
-            next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.student.device)
-        
-        # Calculate total number of samples
-        total_samples = num_steps * self.config.num_envs
-        
-        # Train on collected trajectories
-        for start_idx in range(0, total_samples, batch_size):
-            end_idx = min(start_idx + batch_size, total_samples)
-            current_batch_size = end_idx - start_idx
-            
-            # Create batch
-            batch = {
-                'partial_obs': {},
-                'full_obs': {}
-            }
-            
-            # Filter observations for student and teacher
-            for key in all_keys:
-                # Reshape observations to [total_samples, *shape]
-                flat_obs = obs[key].reshape(total_samples, *obs[key].shape[2:])
-                # Get current batch
-                batch_obs = flat_obs[start_idx:end_idx]
-                
-                if key in self.student.mlp_keys + self.student.cnn_keys:
-                    batch['partial_obs'][key] = batch_obs
-                if key in self.teacher.mlp_keys + self.teacher.cnn_keys:
-                    batch['full_obs'][key] = batch_obs
-            
-            # Perform training step
-            step_metrics = self.train_step(batch)
-            
-            # Update metrics
-            for key, value in step_metrics.items():
-                if value is not None:
-                    metrics[key].append(value)
-            
-            # Log to TensorBoard
-            if writer is not None:
-                writer.add_scalar('bc/loss', step_metrics['bc_loss'], global_step + start_idx)
-                
-                if not self.student.is_discrete:
-                    writer.add_scalar('bc/action_diff', step_metrics['action_diff'], global_step + start_idx)
-        
-        # Compute average metrics
-        avg_metrics = {
-            key: sum(values) / len(values) if values else None
-            for key, values in metrics.items()
-        }
-        
-        return avg_metrics
+        return metrics

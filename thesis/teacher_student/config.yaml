@@ -35,19 +35,21 @@ defaults:
 
   # PPO Encoder Architecture
   encoder:
-    act: 'silu'   # Activation function for both CNN and MLP encoders
-    norm: 'layer'  # Layer normalization
-    output_dim: 512 # Output dimension for both CNN and MLP encoders
-
-    # MLP encoder settings
-    mlp_layers: 2
-    mlp_units: 256
-    
-    # CNN encoder settings
-    cnn_depth: 48
-    cnn_blocks: 0
-    resize: 'bilinear'
-    minres: 4
+    act: "tanh"  # Activation function
+    norm: "layer"  # Normalization type
+    cnn_depth: 32  # Base depth for CNN
+    cnn_blocks: 2  # Number of residual blocks
+    resize: "stride"  # Resize strategy
+    minres: 4  # Minimum resolution
+    cnn_output_dim: 512  # Output dimension for CNN
+    mlp_layers: 2  # Number of MLP layers
+    mlp_units: 512  # Number of units per MLP layer
+    mlp_output_dim: 512  # Output dimension for MLP
+    output_dim: 512  # Final output dimension
+    student_to_teacher_imitation: false  # Whether to enable student-to-teacher imitation
+    teacher_to_student_imitation: false  # Whether to enable teacher-to-student imitation
+    student_to_teacher_lambda: 0.1  # Weight for student-to-teacher imitation loss
+    teacher_to_student_lambda: 0.1  # Weight for teacher-to-student imitation loss
 
   # Behavioral Cloning settings
   bc:
@@ -96,7 +98,7 @@ gymnasium_bandit5:
   keys: {mlp_keys: '\b(neighbors_unprivileged|position)\b', cnn_keys: '^$'}
   exp_name: "bandit5_distill"
 
-gymnasium_lavatrail8:
+gymnasium_lavatrail8: &gymnasium_lavatrail8
   task: gymnasium_LavaTrail8x8-v0
   total_timesteps: 40000
   num_envs: 4
@@ -109,7 +111,30 @@ gymnasium_lavatrail8:
   keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
   exp_name: "lavatrail8_distill"
 
-gymnasium_blindpick:
+gymnasium_lavatrail8_studentteacherlatent:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    student_to_teacher_lambda: 0.1
+  exp_name: "lavatrail8_studentteacherlatent"
+
+gymnasium_lavatrail8_teacherstudentlatent:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    teacher_to_student_imitation: true
+    teacher_to_student_lambda: 0.1
+  exp_name: "lavatrail8_teacherstudentlatent"
+
+gymnasium_lavatrail8_imitationlatent:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    teacher_to_student_imitation: true
+    student_to_teacher_lambda: 0.1
+    teacher_to_student_lambda: 0.1
+  exp_name: "lavatrail8_imitationlatent"
+
+gymnasium_blindpick: &gymnasium_blindpick
   task: gymnasium_FOFixedGripper2DBlind7cmPick-v0
   total_timesteps: 200000
   num_envs: 4
@@ -117,7 +142,7 @@ gymnasium_blindpick:
   log_keys_video: [camera_front]
   eval:
     eval_interval: 1000
-    num_eval_episodes: 10
+    num_eval_episodes: 100
     eval_envs: 4
     video_log_interval: 1
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}

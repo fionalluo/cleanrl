@@ -13,7 +13,10 @@ CONFIGS=(
   # "cartpole_small"
   # "gymnasium_bandit5"
   # "gymnasium_lavatrail8"
-  "gymnasium_blindpick"
+  # "gymnasium_blindpick"
+  "gymnasium_lavatrail8_imitationlatent"
+  "gymnasium_lavatrail8_studentteacherlatent"
+  "gymnasium_lavatrail8_teacherstudentlatent"
 )
 
 NUM_SEEDS=1

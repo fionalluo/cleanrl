@@ -35,6 +35,7 @@ from embodied.core import Path, Flags, Config
 from thesis.teacher_student.teacher import TeacherPolicy
 from thesis.teacher_student.student import StudentPolicy
 from thesis.teacher_student.bc import BehavioralCloning
+from thesis.teacher_student.encoder import DualEncoder
 
 def dict_to_namespace(d):
     """Convert a dictionary to a SimpleNamespace recursively."""
@@ -177,7 +178,7 @@ def process_video_frames(frames, key):
         raise ValueError(f"Unexpected shape for {key}: {frames.shape}")
 
 def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
-    """Evaluate a policy for a number of episodes.
+    """Evaluate a policy for a specified number of episodes.
     
     Args:
         policy: Policy to evaluate
@@ -187,18 +188,19 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
         log_video: Whether to log video frames
         
     Returns:
-        dict containing evaluation metrics
+        dict of evaluation metrics
     """
     # Initialize metrics
     episode_returns = []
     episode_lengths = []
     
-    # Initialize video frames if logging
-    video_frames = {key: [] for key in envs.obs_space.keys() if len(envs.obs_space[key].shape) == 3}
+    # Initialize video logging if enabled
+    video_frames = {key: [] for key in envs.obs_space.keys() if key in ['image', 'camera_front']} if log_video else {}
     
     # Initialize observation storage
     obs = {}
-    all_keys = set(policy.mlp_keys + policy.cnn_keys)
+    # Always use all keys from both teacher and student
+    all_keys = set(policy.mlp_keys + policy.cnn_keys + policy.dual_encoder.student_encoder.mlp_keys + policy.dual_encoder.student_encoder.cnn_keys)
     for key in all_keys:
         if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
             obs[key] = torch.zeros((envs.num_envs,) + envs.obs_space[key].shape).to(device)
@@ -208,10 +210,19 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
     
     # Initialize actions with zeros and reset flags
     action_shape = envs.act_space['action'].shape
-    acts = {
-        'action': np.zeros((envs.num_envs,) + action_shape, dtype=np.float32),
-        'reset': np.ones(envs.num_envs, dtype=bool)
-    }
+    if policy.is_discrete:
+        # For discrete actions, initialize as one-hot
+        acts = {
+            'action': np.zeros((envs.num_envs,) + action_shape, dtype=np.float32),
+            'reset': np.ones(envs.num_envs, dtype=bool)
+        }
+        # Set first action to 1.0 (one-hot)
+        acts['action'][:, 0] = 1.0
+    else:
+        acts = {
+            'action': np.zeros((envs.num_envs,) + action_shape, dtype=np.float32),
+            'reset': np.ones(envs.num_envs, dtype=bool)
+        }
     
     # Get initial observations
     obs_dict = envs.step(acts)
@@ -227,12 +238,15 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
     while len(episode_returns) < num_episodes:
         # Get action from policy
         with torch.no_grad():
-            action, _, _, _ = policy.get_action_and_value(obs)
+            action, _, _, _, _ = policy.get_action_and_value(obs)
         
         # Step environment
         action_np = action.cpu().numpy()
         if policy.is_discrete:
-            action_np = action_np.reshape(envs.num_envs, -1)
+            # Convert to one-hot for discrete actions
+            one_hot = np.zeros((envs.num_envs,) + action_shape, dtype=np.float32)
+            one_hot[np.arange(envs.num_envs), action_np.reshape(-1)] = 1.0
+            action_np = one_hot
         
         acts = {
             'action': action_np,
@@ -302,8 +316,12 @@ def main(argv=None):
     # Initialize components
     device = torch.device("cuda" if torch.cuda.is_available() and config.cuda else "cpu")
     
-    teacher = TeacherPolicy(envs, config).to(device)
-    student = StudentPolicy(envs, config).to(device)
+    # Create shared dual encoder
+    dual_encoder = DualEncoder(envs.obs_space, config).to(device)
+    
+    # Initialize teacher and student with shared encoder
+    teacher = TeacherPolicy(envs, config, dual_encoder).to(device)
+    student = StudentPolicy(envs, config, dual_encoder).to(device)
     
     bc_trainer = BehavioralCloning(student, teacher, config)
     
@@ -451,7 +469,7 @@ def main(argv=None):
             
             # Get action from teacher policy
             with torch.no_grad():
-                action, logprob, _, value = teacher.get_action_and_value(next_obs)
+                action, logprob, _, value, _ = teacher.get_action_and_value(next_obs)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -459,7 +477,10 @@ def main(argv=None):
             # Step environment
             action_np = action.cpu().numpy()
             if teacher.is_discrete:
-                action_np = action_np.reshape(num_envs, -1)
+                # Convert to one-hot for discrete actions
+                one_hot = np.zeros((config.num_envs,) + action_shape, dtype=np.float32)
+                one_hot[np.arange(config.num_envs), action_np.reshape(-1)] = 1.0
+                action_np = one_hot
             
             acts = {
                 'action': action_np,
@@ -542,7 +563,7 @@ def main(argv=None):
                     mb_obs[key] = obs[key].reshape(-1, *obs[key].shape[2:])[mb_inds]
                 
                 # Get new action probabilities and values
-                _, newlogprob, entropy, newvalue = teacher.get_action_and_value(
+                _, newlogprob, entropy, newvalue, imitation_losses = teacher.get_action_and_value(
                     mb_obs, actions.reshape(-1, *actions.shape[2:])[mb_inds]
                 )
                 
@@ -582,8 +603,13 @@ def main(argv=None):
                 # Entropy loss
                 entropy_loss = entropy.mean()
                 
+                # Imitation loss
+                imitation_loss = 0.0
+                if imitation_losses and config.encoder.teacher_to_student_imitation:
+                    imitation_loss = imitation_losses['teacher_to_student']
+                
                 # Total loss
-                loss = pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef
+                loss = pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef + config.encoder.teacher_to_student_lambda * imitation_loss
                 
                 # Optimize teacher
                 teacher_optimizer.zero_grad()
@@ -603,13 +629,10 @@ def main(argv=None):
         student_transitions = student.collect_transitions(envs, config.num_steps)
         
         # Then do BC updates using the collected data
-        for _ in range(config.update_epochs * config.num_minibatches):  # 4 epochs * 4 minibatches = 16 updates
+        for _ in range(config.update_epochs * config.num_minibatches):  # 4 epochs * 4 minibatches
             bc_metrics = bc_trainer.train(
-                envs,
-                1,  # One step per update
-                config.bc.batch_size // config.num_minibatches,  # Match teacher's minibatch size
-                None,  # Remove writer parameter
-                global_step
+                student_transitions,
+                num_epochs=1
             )
             
             # Log BC metrics
