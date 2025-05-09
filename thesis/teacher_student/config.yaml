@@ -28,28 +28,34 @@ defaults:
 
   # Teacher and student observation keys
   full_keys: {mlp_keys: '.*', cnn_keys: '.*'}  # Teacher sees everything
-  keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}  # Student sees partial info
+  keys: {mlp_keys: '.*', cnn_keys: '.*'}  # Student sees all info (default)
 
   save_model: false
   log_keys_video: [image]
 
   # PPO Encoder Architecture
   encoder:
-    act: "tanh"  # Activation function
+    act: "silu"  # Activation function
     norm: "layer"  # Normalization type
-    cnn_depth: 32  # Base depth for CNN
-    cnn_blocks: 2  # Number of residual blocks
-    resize: "stride"  # Resize strategy
-    minres: 4  # Minimum resolution
-    cnn_output_dim: 512  # Output dimension for CNN
-    mlp_layers: 2  # Number of MLP layers
-    mlp_units: 512  # Number of units per MLP layer
-    mlp_output_dim: 512  # Output dimension for MLP
     output_dim: 512  # Final output dimension
+
+    mlp_layers: 2  # Number of MLP layers
+    mlp_units: 256  # Number of units per MLP layer
+
+    cnn_depth: 48  # Base depth for CNN
+    cnn_blocks: 0  # Number of residual blocks
+    resize: "bilinear"  # Resize strategy
+    minres: 4  # Minimum resolution
+
     student_to_teacher_imitation: false  # Whether to enable student-to-teacher imitation
     teacher_to_student_imitation: false  # Whether to enable teacher-to-student imitation
     student_to_teacher_lambda: 0.0  # Weight for student-to-teacher imitation loss
     teacher_to_student_lambda: 0.0  # Weight for teacher-to-student imitation loss
+  
+  # Actor and critic architecture
+  actor_critic:
+    act: "silu"  # Activation function
+    norm: "layer"  # Normalization type
 
   # Behavioral Cloning settings
   bc:

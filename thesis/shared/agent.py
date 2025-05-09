@@ -40,27 +40,37 @@ class BaseAgent(nn.Module):
                 if re.match(config.keys.mlp_keys, k):
                     self.student_mlp_keys.append(k)
         
+        # Initialize activation function
+        if config.actor_critic.act == 'silu':
+            self.act = nn.SiLU()
+        elif config.actor_critic.act == 'relu':
+            self.act = nn.ReLU()
+        elif config.actor_critic.act == 'tanh':
+            self.act = nn.Tanh()
+        else:
+            raise ValueError(f"Unknown activation function: {encoder_config.act}")
+        
         # Determine if action space is discrete or continuous
         self.is_discrete = envs.act_space['action'].discrete
         
         # Actor and critic networks operating on latent space
         self.critic = nn.Sequential(
             layer_init(nn.Linear(config.encoder.output_dim, config.encoder.output_dim // 2)),
-            nn.Tanh(),
+            self.act,
             layer_init(nn.Linear(config.encoder.output_dim // 2, 1), std=1.0),
         )
         
         if self.is_discrete:
             self.actor = nn.Sequential(
                 layer_init(nn.Linear(config.encoder.output_dim, config.encoder.output_dim // 2)),
-                nn.Tanh(),
+                self.act,
                 layer_init(nn.Linear(config.encoder.output_dim // 2, envs.act_space['action'].shape[0]), std=0.01),
             )
         else:
             action_size = np.prod(envs.act_space['action'].shape)
             self.actor_mean = nn.Sequential(
                 layer_init(nn.Linear(config.encoder.output_dim, config.encoder.output_dim // 2)),
-                nn.Tanh(),
+                self.act,
                 layer_init(nn.Linear(config.encoder.output_dim // 2, action_size), std=0.01),
             )
             self.actor_logstd = nn.Parameter(torch.zeros(1, action_size))

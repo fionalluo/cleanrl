@@ -108,7 +108,7 @@ class StudentPolicy(BaseAgent):
         
         # Get all keys needed for both student and teacher
         all_keys = self.all_mlp_keys | self.all_cnn_keys
-        print("all_keys", all_keys)
+        # print("all_keys", all_keys)
         
         # Initialize observation storage
         obs = {}

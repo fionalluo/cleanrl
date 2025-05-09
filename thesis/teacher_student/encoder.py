@@ -138,12 +138,6 @@ class Encoder(nn.Module):
             
             # Update x to use filtered observations
             x = filtered_x
-            print("\nIs teacher:", self.is_teacher)
-            print("X keys:", x.keys())
-            # Print shapes of all keys in x
-            print("\nObservation shapes:")
-            for key, value in x.items():
-                print(f"{key}: {value.shape}")
             
             # Process CNN observations
             cnn_features = None
