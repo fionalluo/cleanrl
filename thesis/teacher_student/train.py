@@ -177,7 +177,7 @@ def process_video_frames(frames, key):
     else:
         raise ValueError(f"Unexpected shape for {key}: {frames.shape}")
 
-def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
+def evaluate_policy(policy, envs, device, config, log_video=False):
     """Evaluate a policy for a specified number of episodes.
     
     Args:
@@ -185,6 +185,7 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
         envs: Vectorized environment
         num_episodes: Number of episodes to evaluate
         device: Device to run evaluation on
+        config: Configuration object
         log_video: Whether to log video frames
         
     Returns:
@@ -193,6 +194,7 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
     # Initialize metrics
     episode_returns = []
     episode_lengths = []
+    num_episodes = config.eval.num_eval_episodes
     
     # Initialize video logging if enabled
     video_frames = {key: [] for key in envs.obs_space.keys() if key in ['image', 'camera_front']} if log_video else {}
@@ -200,7 +202,12 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
     # Initialize observation storage
     obs = {}
     # Always use all keys from both teacher and student
-    all_keys = set(policy.mlp_keys + policy.cnn_keys + policy.dual_encoder.student_encoder.mlp_keys + policy.dual_encoder.student_encoder.cnn_keys)
+    all_keys = set(
+        policy.dual_encoder.student_encoder.mlp_keys + 
+        policy.dual_encoder.student_encoder.cnn_keys +
+        policy.dual_encoder.teacher_encoder.mlp_keys +
+        policy.dual_encoder.teacher_encoder.cnn_keys
+    )
     for key in all_keys:
         if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
             obs[key] = torch.zeros((envs.num_envs,) + envs.obs_space[key].shape).to(device)
@@ -210,19 +217,10 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
     
     # Initialize actions with zeros and reset flags
     action_shape = envs.act_space['action'].shape
-    if policy.is_discrete:
-        # For discrete actions, initialize as one-hot
-        acts = {
-            'action': np.zeros((envs.num_envs,) + action_shape, dtype=np.float32),
-            'reset': np.ones(envs.num_envs, dtype=bool)
-        }
-        # Set first action to 1.0 (one-hot)
-        acts['action'][:, 0] = 1.0
-    else:
-        acts = {
-            'action': np.zeros((envs.num_envs,) + action_shape, dtype=np.float32),
-            'reset': np.ones(envs.num_envs, dtype=bool)
-        }
+    acts = {
+        'action': np.zeros((envs.num_envs,) + action_shape, dtype=np.float32),
+        'reset': np.ones(envs.num_envs, dtype=bool)
+    }
     
     # Get initial observations
     obs_dict = envs.step(acts)
@@ -243,10 +241,7 @@ def evaluate_policy(policy, envs, num_episodes, device, log_video=False):
         # Step environment
         action_np = action.cpu().numpy()
         if policy.is_discrete:
-            # Convert to one-hot for discrete actions
-            one_hot = np.zeros((envs.num_envs,) + action_shape, dtype=np.float32)
-            one_hot[np.arange(envs.num_envs), action_np.reshape(-1)] = 1.0
-            action_np = one_hot
+            action_np = action_np.reshape(envs.num_envs, -1)
         
         acts = {
             'action': action_np,
@@ -408,8 +403,8 @@ def main(argv=None):
     
     # Run initial evaluation
     print("Running initial evaluation...")
-    teacher_eval_metrics = evaluate_policy(teacher, eval_envs, config.eval.num_eval_episodes, device, log_video=True)
-    student_eval_metrics = evaluate_policy(student, eval_envs, config.eval.num_eval_episodes, device, log_video=True)
+    teacher_eval_metrics = evaluate_policy(teacher, eval_envs, device, config, log_video=True)
+    student_eval_metrics = evaluate_policy(student, eval_envs, device, config, log_video=True)
     
     # Log initial evaluation metrics
     if config.track:
@@ -476,11 +471,10 @@ def main(argv=None):
             
             # Step environment
             action_np = action.cpu().numpy()
+            # print(f"Raw action shape (training): {action_np.shape}")
             if teacher.is_discrete:
-                # Convert to one-hot for discrete actions
-                one_hot = np.zeros((config.num_envs,) + action_shape, dtype=np.float32)
-                one_hot[np.arange(config.num_envs), action_np.reshape(-1)] = 1.0
-                action_np = one_hot
+                action_np = action_np.reshape(config.num_envs, -1)
+                # print(f"Final action shape: {action_np.shape}")
             
             acts = {
                 'action': action_np,
@@ -662,10 +656,10 @@ def main(argv=None):
         # Periodic evaluation
         if global_step - last_eval >= config.eval.eval_interval * config.num_envs:
             # Evaluate teacher
-            teacher_eval_metrics = evaluate_policy(teacher, eval_envs, config.eval.num_eval_episodes, device, log_video=True)
+            teacher_eval_metrics = evaluate_policy(teacher, eval_envs, device, config, log_video=True)
             
             # Evaluate student
-            student_eval_metrics = evaluate_policy(student, eval_envs, config.eval.num_eval_episodes, device, log_video=True)
+            student_eval_metrics = evaluate_policy(student, eval_envs, device, config, log_video=True)
             
             # Log evaluation metrics
             if config.track:

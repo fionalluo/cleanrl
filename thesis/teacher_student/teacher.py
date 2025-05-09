@@ -11,15 +11,13 @@ import torch.nn.functional as F
 
 class TeacherPolicy(BaseAgent):
     def __init__(self, envs, config, dual_encoder):
-        super().__init__(envs, config)
-        self.dual_encoder = dual_encoder
+        super().__init__(envs, config, dual_encoder)
         
         # Get all observation keys
-        all_keys = list(envs.obs_space.keys())
-        
-        # Match keys against regex patterns
-        self.mlp_keys = [k for k in all_keys if re.search(config.full_keys.mlp_keys, k)]
-        self.cnn_keys = [k for k in all_keys if re.search(config.full_keys.cnn_keys, k)]
+        self.all_keys = []
+        for k in envs.obs_space.keys():
+            if k not in ['reward', 'is_first', 'is_last', 'is_terminal']:
+                self.all_keys.append(k)
         
         # Check if action space is discrete
         self.is_discrete = envs.act_space['action'].discrete
@@ -53,8 +51,12 @@ class TeacherPolicy(BaseAgent):
             )
             self.actor_logstd = nn.Parameter(torch.zeros(1, action_size))
     
+    def encode_observations(self, x):
+        """Encode observations using teacher encoder."""
+        return self.dual_encoder.encode_teacher_observations(x)
+    
     def get_value(self, x):
-        latent = self.dual_encoder.encode_teacher_observations(x)
+        latent = self.encode_observations(x)
         return self.critic(latent)
     
     def get_action_and_value(self, x, action=None):
@@ -71,37 +73,18 @@ class TeacherPolicy(BaseAgent):
             value: Value estimate
             imitation_losses: Dictionary of imitation losses
         """
-        # Get teacher's latent representation
-        teacher_latent = self.dual_encoder.encode_teacher_observations(x)
-        
-        # Get student's latent representation
-        student_latent = self.dual_encoder.encode_student_observations(x)
-        
-        # Get action distribution and value
-        logits = self.actor(teacher_latent)
-        value = self.critic(teacher_latent)
-        
-        if self.is_discrete:
-            probs = Categorical(logits=logits)
-            if action is None:
-                action = probs.sample()
-            # For discrete actions, we need to get the index of the 1 in the one-hot vector
-            if action.dim() > 1 and action.shape[-1] > 1:
-                action = action.argmax(dim=-1)
-            logprob = probs.log_prob(action)
-            entropy = probs.entropy()
-        else:
-            std = torch.ones_like(logits) * self.std
-            probs = torch.distributions.Normal(logits, std)
-            if action is None:
-                action = probs.sample()
-            logprob = probs.log_prob(action).sum(1)
-            entropy = probs.entropy().sum(1)
+        # Get base action and value
+        action, logprob, entropy, value = super().get_action_and_value(x, action)
         
         # Compute imitation losses if enabled
         imitation_losses = {}
         if self.config.encoder.teacher_to_student_imitation and self.config.encoder.teacher_to_student_lambda > 0:
-            imitation_losses['teacher_to_student'] = F.mse_loss(teacher_latent, student_latent)
+            # Get teacher's latent representation
+            teacher_latent = self.encode_observations(x)
+            # Get student's latent representation with stop gradient
+            with torch.no_grad():
+                student_latent = self.dual_encoder.encode_student_observations(x)
+            imitation_losses['teacher_to_student'] = self.dual_encoder.compute_teacher_to_student_loss(teacher_latent, student_latent)
         
         return action, logprob, entropy, value, imitation_losses
 
@@ -124,7 +107,7 @@ class TeacherPolicy(BaseAgent):
         
         # Initialize observation storage
         obs = {}
-        for key in self.mlp_keys:
+        for key in self.all_keys:
             if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
                 obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.device)
             else:  # Non-image observations
@@ -152,14 +135,14 @@ class TeacherPolicy(BaseAgent):
         # Get initial observations using step with reset flags
         obs_dict = envs.step(acts)
         next_obs = {}
-        for key in self.mlp_keys:
+        for key in self.all_keys:
             next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.device)
         next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.device)
         
         # Collect transitions
         for step in range(num_steps):
             # Store observations
-            for key in self.mlp_keys:
+            for key in self.all_keys:
                 obs[key][step] = next_obs[key]
             dones[step] = next_done
             
@@ -181,7 +164,7 @@ class TeacherPolicy(BaseAgent):
             obs_dict = envs.step(acts)
             
             # Process observations
-            for key in self.mlp_keys:
+            for key in self.all_keys:
                 next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.device)
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.device)
             rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(self.device)
@@ -189,10 +172,10 @@ class TeacherPolicy(BaseAgent):
             # Store transition
             for env_idx in range(self.config.num_envs):
                 transition = {
-                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in self.mlp_keys},
+                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in self.all_keys},
                     'action': actions[step, env_idx].cpu().numpy(),
                     'reward': rewards[step, env_idx].cpu().numpy(),
-                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in self.mlp_keys},
+                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in self.all_keys},
                     'done': next_done[env_idx].cpu().numpy()
                 }
                 transitions.append(transition)

@@ -175,37 +175,6 @@ class Encoder(nn.Module):
         # Project to final representation
         return self.output_proj(features)
 
-    def compute_imitation_loss(self, student_latent, teacher_latent):
-        """Compute latent imitation losses between student and teacher.
-        
-        Args:
-            student_latent: Latent representation from student encoder
-            teacher_latent: Latent representation from teacher encoder
-            
-        Returns:
-            dict containing imitation losses and total loss
-        """
-        losses = {}
-        
-        # Student to teacher imitation loss
-        if self.config.encoder.student_to_teacher_imitation:
-            student_to_teacher_loss = F.mse_loss(student_latent, teacher_latent)
-            losses['student_to_teacher_loss'] = student_to_teacher_loss
-            losses['total_loss'] = self.config.encoder.student_to_teacher_lambda * student_to_teacher_loss
-        else:
-            losses['student_to_teacher_loss'] = torch.tensor(0.0, device=student_latent.device)
-            losses['total_loss'] = torch.tensor(0.0, device=student_latent.device)
-            
-        # Teacher to student imitation loss
-        if self.config.encoder.teacher_to_student_imitation:
-            teacher_to_student_loss = F.mse_loss(teacher_latent, student_latent)
-            losses['teacher_to_student_loss'] = teacher_to_student_loss
-            losses['total_loss'] = losses['total_loss'] + self.config.encoder.teacher_to_student_lambda * teacher_to_student_loss
-        else:
-            losses['teacher_to_student_loss'] = torch.tensor(0.0, device=student_latent.device)
-            
-        return losses 
-
 
 class DualEncoder(nn.Module):
     def __init__(self, obs_space, config):
@@ -242,20 +211,10 @@ class DualEncoder(nn.Module):
                 student_obs[key] = x[key]
         
         return self.student_encoder.encode_observations(student_obs)
+
+    def compute_teacher_to_student_loss(self, teacher_latent, student_latent):
+        return torch.nn.functional.mse_loss(teacher_latent, student_latent)
     
-    def compute_imitation_losses(self, teacher_latent, student_latent):
-        losses = {}
-        
-        if self.student_to_teacher_imitation:
-            student_to_teacher_loss = torch.nn.functional.mse_loss(
-                student_latent, teacher_latent
-            )
-            losses['student_to_teacher'] = self.student_to_teacher_lambda * student_to_teacher_loss
-        
-        if self.teacher_to_student_imitation:
-            teacher_to_student_loss = torch.nn.functional.mse_loss(
-                teacher_latent, student_latent
-            )
-            losses['teacher_to_student'] = self.teacher_to_student_lambda * teacher_to_student_loss
-        
-        return losses 
+    def compute_student_to_teacher_loss(self, teacher_latent, student_latent):
+        return torch.nn.functional.mse_loss(student_latent, teacher_latent)
+    

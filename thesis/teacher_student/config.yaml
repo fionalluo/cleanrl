@@ -48,8 +48,8 @@ defaults:
     output_dim: 512  # Final output dimension
     student_to_teacher_imitation: false  # Whether to enable student-to-teacher imitation
     teacher_to_student_imitation: false  # Whether to enable teacher-to-student imitation
-    student_to_teacher_lambda: 0.1  # Weight for student-to-teacher imitation loss
-    teacher_to_student_lambda: 0.1  # Weight for teacher-to-student imitation loss
+    student_to_teacher_lambda: 0.0  # Weight for student-to-teacher imitation loss
+    teacher_to_student_lambda: 0.0  # Weight for teacher-to-student imitation loss
 
   # Behavioral Cloning settings
   bc:
@@ -109,7 +109,7 @@ gymnasium_lavatrail8: &gymnasium_lavatrail8
     eval_envs: 4
   full_keys: {mlp_keys: '\b(neighbors|last_action|position)\b', cnn_keys: '^$'}
   keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
-  exp_name: "lavatrail8_distill"
+  exp_name: "lavatrail8_distill_TEST"
 
 gymnasium_lavatrail8_studentteacherlatent:
   <<: *gymnasium_lavatrail8

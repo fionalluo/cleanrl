@@ -10,15 +10,38 @@ from thesis.teacher_student.encoder import DualEncoder, layer_init
 
 class StudentPolicy(BaseAgent):
     def __init__(self, envs, config, dual_encoder):
-        super().__init__(envs, config)
-        self.dual_encoder = dual_encoder
+        super().__init__(envs, config, dual_encoder)
         
         # Get all observation keys
         all_keys = list(envs.obs_space.keys())
         
+        obs_space = envs.obs_space
+        
         # Match keys against regex patterns
-        self.mlp_keys = [k for k in all_keys if re.search(config.full_keys.mlp_keys, k)]
-        self.cnn_keys = [k for k in all_keys if re.search(config.full_keys.cnn_keys, k)]
+        self.mlp_keys = []
+        self.cnn_keys = []
+        for k in obs_space.keys():
+            if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
+                continue
+            if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
+                if re.match(config.keys.cnn_keys, k):
+                    self.cnn_keys.append(k)
+            else:  # Non-image observations
+                if re.match(config.keys.mlp_keys, k):
+                    self.mlp_keys.append(k)
+        
+        # Filter keys based on the regex patterns for teacher
+        self.full_mlp_keys = []
+        self.full_cnn_keys = []
+        for k in obs_space.keys():
+            if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
+                continue
+            if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
+                if re.match(config.full_keys.cnn_keys, k):
+                    self.full_cnn_keys.append(k)
+            else:  # Non-image observations
+                if re.match(config.full_keys.mlp_keys, k):
+                    self.full_mlp_keys.append(k)
         
         # Check if action space is discrete
         self.is_discrete = envs.act_space['action'].discrete
@@ -52,12 +75,16 @@ class StudentPolicy(BaseAgent):
             )
             self.actor_logstd = nn.Parameter(torch.zeros(1, action_size))
     
+    def encode_observations(self, x):
+        """Encode observations using student encoder."""
+        return self.dual_encoder.encode_student_observations(x)
+    
     def get_value(self, x):
-        latent = self.dual_encoder.encode_student_observations(x)
+        latent = self.encode_observations(x)
         return self.critic(latent)
     
     def get_action_and_value(self, x, action=None):
-        """Get action and value from student policy.
+        """Get action and value from student policy, with additional imitation loss.
         
         Args:
             x: dict of observations
@@ -66,32 +93,8 @@ class StudentPolicy(BaseAgent):
         Returns:
             tuple of (action, log_prob, entropy, value, imitation_losses)
         """
-        # Encode observations
-        latent = self.dual_encoder.encode_student_observations(x)
-        
-        # Get value
-        value = self.critic(latent)
-        
-        # Get action distribution
-        if self.is_discrete:
-            logits = self.actor(latent)
-            probs = Categorical(logits=logits)
-            if action is None:
-                action = probs.sample()
-            # For discrete actions, we need to get the index of the 1 in the one-hot vector
-            if action.dim() > 1 and action.shape[-1] > 1:
-                action = action.argmax(dim=-1)
-            log_prob = probs.log_prob(action)
-            entropy = probs.entropy()
-        else:
-            mean = self.actor_mean(latent)
-            log_std = self.actor_logstd.expand_as(mean)
-            std = log_std.exp()
-            probs = Normal(mean, std)
-            if action is None:
-                action = probs.sample()
-            log_prob = probs.log_prob(action).sum(1)
-            entropy = probs.entropy().sum(1)
+        # Get base action and value from parent class
+        action, log_prob, entropy, value = super().get_action_and_value(x, action)
         
         # Calculate imitation loss if enabled and lambda > 0
         imitation_losses = {}
@@ -99,8 +102,10 @@ class StudentPolicy(BaseAgent):
             # Get teacher's latent representation with stop gradient
             with torch.no_grad():
                 teacher_latent = self.dual_encoder.encode_teacher_observations(x)
+            # Get student's latent representation
+            student_latent = self.encode_observations(x)
             # Compute imitation loss
-            imitation_losses = self.dual_encoder.compute_imitation_losses(teacher_latent, latent)
+            imitation_losses['student_to_teacher'] = self.dual_encoder.compute_student_to_teacher_loss(teacher_latent, student_latent)
         
         return action, log_prob, entropy, value, imitation_losses
 
@@ -113,22 +118,25 @@ class StudentPolicy(BaseAgent):
             
         Returns:
             list of transitions, each containing:
-                - obs: dict of full observations
+                - obs: dict of observations (both partial and full)
                 - action: action taken
                 - reward: reward received
-                - next_obs: dict of next full observations
+                - next_obs: dict of next observations (both partial and full)
                 - done: whether episode ended
         """
         transitions = []
         
+        # Get all keys needed for both student and teacher
+        all_keys = set(self.mlp_keys + self.cnn_keys + self.full_mlp_keys + self.full_cnn_keys)
+        
         # Initialize observation storage
         obs = {}
-        for key in self.mlp_keys:
-            if len(envs.obs_space[key].shape) == 3 and envs.obs_space[key].shape[-1] == 3:  # Image observations
-                obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.device)
-            else:  # Non-image observations
+        for key in all_keys:
+            if key in self.mlp_keys or key in self.full_mlp_keys:
                 size = np.prod(envs.obs_space[key].shape)
                 obs[key] = torch.zeros((num_steps, self.config.num_envs, size)).to(self.device)
+            else:  # CNN keys
+                obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.device)
         
         # Initialize action storage
         if self.is_discrete:
@@ -143,46 +151,35 @@ class StudentPolicy(BaseAgent):
         
         # Initialize actions with zeros and reset flags
         action_shape = envs.act_space['action'].shape
-        if self.is_discrete:
-            # For discrete actions, initialize as one-hot
-            acts = {
-                'action': np.zeros((self.config.num_envs,) + action_shape, dtype=np.float32),
-                'reset': np.ones(self.config.num_envs, dtype=bool)
-            }
-            # Set first action to 1.0 (one-hot)
-            acts['action'][:, 0] = 1.0
-        else:
-            acts = {
-                'action': np.zeros((self.config.num_envs,) + action_shape, dtype=np.float32),
-                'reset': np.ones(self.config.num_envs, dtype=bool)
-            }
+        acts = {
+            'action': np.zeros((self.config.num_envs,) + action_shape, dtype=np.float32),
+            'reset': np.ones(self.config.num_envs, dtype=bool)  # Reset all environments initially
+        }
         
-        # Get initial observations
+        # Get initial observations using step with reset flags
         obs_dict = envs.step(acts)
         next_obs = {}
-        for key in self.mlp_keys:
+        for key in all_keys:
             next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.device)
         next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.device)
         
         # Collect transitions
         for step in range(num_steps):
             # Store observations
-            for key in self.mlp_keys:
+            for key in all_keys:
                 obs[key][step] = next_obs[key]
             dones[step] = next_done
             
-            # Get action from policy
+            # Get action from policy using only student's observation keys
+            student_obs = {key: next_obs[key] for key in self.mlp_keys + self.cnn_keys}
             with torch.no_grad():
-                action, _, _, _, _ = self.get_action_and_value(next_obs)
+                action, _, _, _, _ = self.get_action_and_value(student_obs)
                 actions[step] = action
             
             # Step environment
             action_np = action.cpu().numpy()
             if self.is_discrete:
-                # Convert to one-hot for discrete actions
-                one_hot = np.zeros((self.config.num_envs,) + action_shape, dtype=np.float32)
-                one_hot[np.arange(self.config.num_envs), action_np.reshape(-1)] = 1.0
-                action_np = one_hot
+                action_np = action_np.reshape(self.config.num_envs, -1)
             
             acts = {
                 'action': action_np,
@@ -192,7 +189,7 @@ class StudentPolicy(BaseAgent):
             obs_dict = envs.step(acts)
             
             # Process observations
-            for key in self.mlp_keys:
+            for key in all_keys:
                 next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(self.device)
             next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(self.device)
             rewards[step] = torch.tensor(obs_dict['reward'].astype(np.float32)).to(self.device)
@@ -200,10 +197,10 @@ class StudentPolicy(BaseAgent):
             # Store transition
             for env_idx in range(self.config.num_envs):
                 transition = {
-                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in self.mlp_keys},
+                    'obs': {key: obs[key][step, env_idx].cpu().numpy() for key in all_keys},
                     'action': actions[step, env_idx].cpu().numpy(),
                     'reward': rewards[step, env_idx].cpu().numpy(),
-                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in self.mlp_keys},
+                    'next_obs': {key: next_obs[key][env_idx].cpu().numpy() for key in all_keys},
                     'done': next_done[env_idx].cpu().numpy()
                 }
                 transitions.append(transition)
