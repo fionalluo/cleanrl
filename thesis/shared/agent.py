@@ -22,17 +22,23 @@ class BaseAgent(nn.Module):
         obs_space = envs.obs_space
         
         # Filter keys based on the regex patterns
-        self.mlp_keys = []
-        self.cnn_keys = []
+        self.student_mlp_keys = []
+        self.student_cnn_keys = []
+        self.teacher_mlp_keys = []
+        self.teacher_cnn_keys = []
         for k in obs_space.keys():
             if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
                 continue
             if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
                 if re.match(config.full_keys.cnn_keys, k):
-                    self.cnn_keys.append(k)
+                    self.teacher_cnn_keys.append(k)
+                if re.match(config.keys.cnn_keys, k):
+                    self.student_cnn_keys.append(k)
             else:  # Non-image observations
                 if re.match(config.full_keys.mlp_keys, k):
-                    self.mlp_keys.append(k)
+                    self.teacher_mlp_keys.append(k)
+                if re.match(config.keys.mlp_keys, k):
+                    self.student_mlp_keys.append(k)
         
         # Determine if action space is discrete or continuous
         self.is_discrete = envs.act_space['action'].discrete

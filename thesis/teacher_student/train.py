@@ -603,7 +603,12 @@ def main(argv=None):
                     imitation_loss = imitation_losses['teacher_to_student']
                 
                 # Total loss
-                loss = pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef + config.encoder.teacher_to_student_lambda * imitation_loss
+                loss = (
+                    pg_loss 
+                    - config.ent_coef * entropy_loss 
+                    + v_loss * config.vf_coef 
+                    + config.encoder.teacher_to_student_lambda * imitation_loss
+                )
                 
                 # Optimize teacher
                 teacher_optimizer.zero_grad()

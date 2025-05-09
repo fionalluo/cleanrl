@@ -18,30 +18,10 @@ class StudentPolicy(BaseAgent):
         obs_space = envs.obs_space
         
         # Match keys against regex patterns
-        self.mlp_keys = []
-        self.cnn_keys = []
-        for k in obs_space.keys():
-            if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
-                continue
-            if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
-                if re.match(config.keys.cnn_keys, k):
-                    self.cnn_keys.append(k)
-            else:  # Non-image observations
-                if re.match(config.keys.mlp_keys, k):
-                    self.mlp_keys.append(k)
-        
-        # Filter keys based on the regex patterns for teacher
-        self.full_mlp_keys = []
-        self.full_cnn_keys = []
-        for k in obs_space.keys():
-            if k in ['reward', 'is_first', 'is_last', 'is_terminal']:
-                continue
-            if len(obs_space[k].shape) == 3 and obs_space[k].shape[-1] == 3:  # Image observations
-                if re.match(config.full_keys.cnn_keys, k):
-                    self.full_cnn_keys.append(k)
-            else:  # Non-image observations
-                if re.match(config.full_keys.mlp_keys, k):
-                    self.full_mlp_keys.append(k)
+        self.mlp_keys = self.student_mlp_keys
+        self.cnn_keys = self.student_cnn_keys
+        self.all_mlp_keys = set(self.mlp_keys + self.teacher_mlp_keys)
+        self.all_cnn_keys = set(self.cnn_keys + self.teacher_cnn_keys)
         
         # Check if action space is discrete
         self.is_discrete = envs.act_space['action'].discrete
@@ -119,7 +99,7 @@ class StudentPolicy(BaseAgent):
         Returns:
             list of transitions, each containing:
                 - obs: dict of observations (both partial and full)
-                - action: action taken
+                - action: action taken (raw index for discrete actions)
                 - reward: reward received
                 - next_obs: dict of next observations (both partial and full)
                 - done: whether episode ended
@@ -127,20 +107,20 @@ class StudentPolicy(BaseAgent):
         transitions = []
         
         # Get all keys needed for both student and teacher
-        all_keys = set(self.mlp_keys + self.cnn_keys + self.full_mlp_keys + self.full_cnn_keys)
+        all_keys = self.all_mlp_keys | self.all_cnn_keys
+        print("all_keys", all_keys)
         
         # Initialize observation storage
         obs = {}
-        for key in all_keys:
-            if key in self.mlp_keys or key in self.full_mlp_keys:
-                size = np.prod(envs.obs_space[key].shape)
-                obs[key] = torch.zeros((num_steps, self.config.num_envs, size)).to(self.device)
-            else:  # CNN keys
-                obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.device)
+        for key in self.all_mlp_keys:
+            size = np.prod(envs.obs_space[key].shape)
+            obs[key] = torch.zeros((num_steps, self.config.num_envs, size)).to(self.device)
+        for key in self.all_cnn_keys:  # CNN keys
+            obs[key] = torch.zeros((num_steps, self.config.num_envs) + envs.obs_space[key].shape).to(self.device)
         
-        # Initialize action storage
+        # Initialize action storage - storing raw indices for discrete actions
         if self.is_discrete:
-            action_shape = (num_steps, self.config.num_envs, envs.act_space['action'].shape[0])
+            action_shape = (num_steps, self.config.num_envs)
         else:
             action_shape = (num_steps, self.config.num_envs) + envs.act_space['action'].shape
         actions = torch.zeros(action_shape).to(self.device)
@@ -171,15 +151,24 @@ class StudentPolicy(BaseAgent):
             dones[step] = next_done
             
             # Get action from policy using only student's observation keys
-            student_obs = {key: next_obs[key] for key in self.mlp_keys + self.cnn_keys}
             with torch.no_grad():
-                action, _, _, _, _ = self.get_action_and_value(student_obs)
+                # Flatten batch and num_envs dimensions for encoder
+                flattened_obs = {}
+                for key in all_keys:
+                    # Reshape to (batch * num_envs, ...)
+                    flattened_obs[key] = obs[key][step].reshape(-1, *obs[key][step].shape[1:])
+                
+                action, _, _, _, _ = self.get_action_and_value(flattened_obs)
+                # For discrete actions, convert from one-hot to index
+                if self.is_discrete:
+                    action = torch.argmax(action, dim=-1)
                 actions[step] = action
             
             # Step environment
             action_np = action.cpu().numpy()
             if self.is_discrete:
-                action_np = action_np.reshape(self.config.num_envs, -1)
+                # Convert to one-hot for environment step
+                action_np = np.eye(envs.act_space['action'].shape[0])[action_np]
             
             acts = {
                 'action': action_np,

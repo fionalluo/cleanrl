@@ -100,9 +100,8 @@ class BehavioralCloning:
         """
         # Convert transitions to tensors
         obs = {}
-        for key in self.student.mlp_keys:
+        for key in transitions[0]['obs'].keys():
             obs[key] = torch.tensor(np.stack([t['obs'][key] for t in transitions]), device=self.device)
-        
         actions = torch.tensor(np.stack([t['action'] for t in transitions]), device=self.device)
         
         # Get teacher actions
@@ -110,7 +109,6 @@ class BehavioralCloning:
             teacher_actions, _, _, _, _ = self.teacher.get_action_and_value(obs)
         
         # Train student
-        self.student.train()
         total_loss = 0
         num_batches = 0
         
@@ -126,6 +124,10 @@ class BehavioralCloning:
                 batch_obs = {k: v[i:i+self.batch_size] for k, v in obs_shuffled.items()}
                 batch_actions = actions_shuffled[i:i+self.batch_size]
                 batch_teacher_actions = teacher_actions_shuffled[i:i+self.batch_size]
+                
+                # Convert raw action indices to one-hot for discrete actions
+                if self.student.is_discrete:
+                    batch_actions = F.one_hot(batch_actions.long(), num_classes=self.student.actor[-1].out_features)
                 
                 # Forward pass
                 student_actions, log_probs, entropy, value, imitation_losses = self.student.get_action_and_value(batch_obs, batch_actions)
