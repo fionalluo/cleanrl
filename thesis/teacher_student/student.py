@@ -25,35 +25,6 @@ class StudentPolicy(BaseAgent):
         
         # Check if action space is discrete
         self.is_discrete = envs.act_space['action'].discrete
-        
-        # Initialize critic
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(config.encoder.output_dim, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0)
-        )
-        
-        # Initialize actor
-        if self.is_discrete:
-            self.actor = nn.Sequential(
-                layer_init(nn.Linear(config.encoder.output_dim, 64)),
-                nn.Tanh(),
-                layer_init(nn.Linear(64, 64)),
-                nn.Tanh(),
-                layer_init(nn.Linear(64, envs.act_space['action'].shape[0]), std=0.01)
-            )
-        else:
-            action_size = np.prod(envs.act_space['action'].shape)
-            self.actor_mean = nn.Sequential(
-                layer_init(nn.Linear(config.encoder.output_dim, 64)),
-                nn.Tanh(),
-                layer_init(nn.Linear(64, 64)),
-                nn.Tanh(),
-                layer_init(nn.Linear(64, action_size), std=0.01)
-            )
-            self.actor_logstd = nn.Parameter(torch.zeros(1, action_size))
     
     def encode_observations(self, x):
         """Encode observations using student encoder."""

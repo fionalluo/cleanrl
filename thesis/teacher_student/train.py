@@ -351,7 +351,7 @@ def main(argv=None):
     print(f"Teacher Policy: {sum(p.numel() for p in teacher.parameters())}")
     print(f"Student Policy: {sum(p.numel() for p in student.parameters())}")
     print("="*50 + "\n")
-    
+        
     bc_trainer = BehavioralCloning(student, teacher, config)
     
     # Initialize optimizers
