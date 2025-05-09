@@ -305,6 +305,41 @@ def main(argv=None):
     teacher = TeacherPolicy(envs, config).to(device)
     student = StudentPolicy(envs, config).to(device)
     
+    # Debug prints for network structures
+    print("\n" + "="*50)
+    print("NEURAL NETWORK STRUCTURES")
+    print("="*50)
+    
+    print("\nTEACHER POLICY STRUCTURE:")
+    print("-"*30)
+    print("MLP Encoder:")
+    print(teacher.mlp_encoder)
+    print("\nLatent Projector:")
+    print(teacher.latent_projector)
+    print("\nActor:")
+    print(teacher.actor if teacher.is_discrete else teacher.actor_mean)
+    print("\nCritic:")
+    print(teacher.critic)
+    
+    print("\nSTUDENT POLICY STRUCTURE:")
+    print("-"*30)
+    print("MLP Encoder:")
+    print(student.mlp_encoder)
+    print("\nLatent Projector:")
+    print(student.latent_projector)
+    print("\nActor:")
+    print(student.actor if student.is_discrete else student.actor_mean)
+    print("\nCritic:")
+    print(student.critic)
+    
+    print("\nPARAMETER COUNTS:")
+    print("-"*30)
+    print(f"Teacher Policy: {sum(p.numel() for p in teacher.parameters())}")
+    print(f"Student Policy: {sum(p.numel() for p in student.parameters())}")
+    print("="*50 + "\n")
+    
+    exit()
+    
     bc_trainer = BehavioralCloning(student, teacher, config)
     
     # Initialize optimizers

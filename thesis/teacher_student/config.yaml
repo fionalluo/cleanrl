@@ -107,7 +107,7 @@ gymnasium_lavatrail8:
     eval_envs: 4
   full_keys: {mlp_keys: '\b(neighbors|last_action|position)\b', cnn_keys: '^$'}
   keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
-  exp_name: "lavatrail8_distill"
+  exp_name: "lavatrail8_distill_REDO"
 
 gymnasium_blindpick:
   task: gymnasium_FOFixedGripper2DBlind7cmPick-v0
