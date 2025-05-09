@@ -35,6 +35,12 @@ defaults:
 
   # PPO Encoder Architecture
   encoder:
+    # act: "relu"  # Activation function
+    # norm: none  # Normalization type
+    # output_dim: 256  # Final output dimension
+
+    # mlp_layers: 2  # Number of MLP layers
+    # mlp_units: 128  # Number of units per MLP layer
     act: "silu"  # Activation function
     norm: "layer"  # Normalization type
     output_dim: 512  # Final output dimension

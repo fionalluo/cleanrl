@@ -318,6 +318,40 @@ def main(argv=None):
     teacher = TeacherPolicy(envs, config, dual_encoder).to(device)
     student = StudentPolicy(envs, config, dual_encoder).to(device)
     
+    # Debug prints for network structures
+    print("\n" + "="*50)
+    print("NEURAL NETWORK STRUCTURES")
+    print("="*50)
+    
+    print("\nDUAL ENCODER STRUCTURE:")
+    print("-"*30)
+    print("Teacher Encoder:")
+    print(dual_encoder.teacher_encoder)
+    print("\nStudent Encoder:")
+    print(dual_encoder.student_encoder)
+    
+    print("\nTEACHER POLICY STRUCTURE:")
+    print("-"*30)
+    print("Actor:")
+    print(teacher.actor if teacher.is_discrete else teacher.actor_mean)
+    print("\nCritic:")
+    print(teacher.critic)
+    
+    print("\nSTUDENT POLICY STRUCTURE:")
+    print("-"*30)
+    print("Actor:")
+    print(student.actor if student.is_discrete else student.actor_mean)
+    print("\nCritic:")
+    print(student.critic)
+    
+    print("\nPARAMETER COUNTS:")
+    print("-"*30)
+    print(f"Teacher Encoder: {sum(p.numel() for p in dual_encoder.teacher_encoder.parameters())}")
+    print(f"Student Encoder: {sum(p.numel() for p in dual_encoder.student_encoder.parameters())}")
+    print(f"Teacher Policy: {sum(p.numel() for p in teacher.parameters())}")
+    print(f"Student Policy: {sum(p.numel() for p in student.parameters())}")
+    print("="*50 + "\n")
+    
     bc_trainer = BehavioralCloning(student, teacher, config)
     
     # Initialize optimizers

@@ -107,7 +107,7 @@ class Encoder(nn.Module):
         total_input_dim = (self.cnn_output_dim if self.cnn_encoder is not None else 0) + (config.encoder.mlp_units if self.mlp_encoder is not None else 0)
         
         # Project concatenated features to latent space
-        self.output_proj = nn.Sequential(
+        self.latent_projector = nn.Sequential(
             layer_init(nn.Linear(total_input_dim, config.encoder.output_dim)),
             self.act,
             nn.LayerNorm(config.encoder.output_dim) if config.encoder.norm == 'layer' else nn.Identity(),
@@ -200,7 +200,7 @@ class Encoder(nn.Module):
             features = self.mlp_encoder(x)
                 
         # Project to final latent space
-        latent = self.output_proj(features)
+        latent = self.latent_projector(features)
         return latent
 
 
