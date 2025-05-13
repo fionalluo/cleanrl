@@ -112,40 +112,135 @@ gymnasium_bandit5:
 
 gymnasium_lavatrail8: &gymnasium_lavatrail8
   task: gymnasium_LavaTrail8x8-v0
-  total_timesteps: 40000
-  num_envs: 4
-  num_steps: 128
+  total_timesteps: 200000  # Doubled from 40000 to allow much more exploration time
+  num_envs: 16  # Doubled from 8 to 16 for even more parallel exploration
+  num_steps: 512  # Doubled from 256 to collect more experience per update
+  learning_rate: 5e-5  # Further reduced for more stable learning during exploration
+  ent_coef: 0.1  # Doubled from 0.05 to encourage even more random actions
+  gamma: 0.99
+  gae_lambda: 0.95
+  num_minibatches: 8  # Increased to handle larger batch size
+  update_epochs: 4
+  norm_adv: true
+  clip_coef: 0.2
+  clip_vloss: true
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.01  # Slightly reduced to allow more policy updates
   eval:
     eval_interval: 100
     num_eval_episodes: 10
     eval_envs: 4
   full_keys: {mlp_keys: '\b(neighbors|last_action|position)\b', cnn_keys: '^$'}
   keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
-  exp_name: "lavatrail8_distill_TEST"
+  exp_name: "lavatrail8_distill_explore"
 
-gymnasium_lavatrail8_studentteacherlatent:
+gymnasium_lavatrail8_unprivileged:
+  <<: *gymnasium_lavatrail8
+  full_keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
+  keys: {mlp_keys: '\b(neighbors_unprivileged|last_action|position)\b', cnn_keys: '^$'}
+  exp_name: "lavatrail8_unprivileged"
+
+# Student-to-teacher imitation
+gymnasium_lavatrail8_studentteacherlatent_0.1:
   <<: *gymnasium_lavatrail8
   encoder:
     student_to_teacher_imitation: true
     student_to_teacher_lambda: 0.1
-  exp_name: "lavatrail8_studentteacherlatent"
+  exp_name: "lavatrail8_studentteacherlatent_0.1"
 
-gymnasium_lavatrail8_teacherstudentlatent:
+gymnasium_lavatrail8_studentteacherlatent_1:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    student_to_teacher_lambda: 1
+  exp_name: "lavatrail8_studentteacherlatent_1"
+
+gymnasium_lavatrail8_studentteacherlatent_2:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    student_to_teacher_lambda: 2
+  exp_name: "lavatrail8_studentteacherlatent_2"
+
+gymnasium_lavatrail8_studentteacherlatent_4:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    student_to_teacher_lambda: 4
+  exp_name: "lavatrail8_studentteacherlatent_4"
+
+gymnasium_lavatrail8_studentteacherlatent_10:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    student_to_teacher_lambda: 10
+  exp_name: "lavatrail8_studentteacherlatent_10"
+
+# Teacher-to-student imitation
+gymnasium_lavatrail8_teacherstudentlatent_0.1:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    student_to_teacher_lambda: 0.1
+  exp_name: "lavatrail8_studentteacherlatent_0.1"
+
+gymnasium_lavatrail8_teacherstudentlatent_1:
   <<: *gymnasium_lavatrail8
   encoder:
     teacher_to_student_imitation: true
-    teacher_to_student_lambda: 0.1
-  exp_name: "lavatrail8_teacherstudentlatent"
+    teacher_to_student_lambda: 1
+  exp_name: "lavatrail8_teacherstudentlatent_1"
 
-gymnasium_lavatrail8_imitationlatent:
+gymnasium_lavatrail8_teacherstudentlatent_2:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    teacher_to_student_imitation: true
+    teacher_to_student_lambda: 2
+  exp_name: "lavatrail8_teacherstudentlatent_2"
+
+gymnasium_lavatrail8_teacherstudentlatent_4:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    teacher_to_student_imitation: true
+    teacher_to_student_lambda: 4
+  exp_name: "lavatrail8_teacherstudentlatent_4"
+
+gymnasium_lavatrail8_teacherstudentlatent_10:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    teacher_to_student_imitation: true
+    teacher_to_student_lambda: 10
+  exp_name: "lavatrail8_teacherstudentlatent_10"
+
+# Imitation of both directions
+gymnasium_lavatrail8_imitationlatent_0.1:
   <<: *gymnasium_lavatrail8
   encoder:
     student_to_teacher_imitation: true
     teacher_to_student_imitation: true
     student_to_teacher_lambda: 0.1
     teacher_to_student_lambda: 0.1
-  exp_name: "lavatrail8_imitationlatent"
+  exp_name: "lavatrail8_imitationlatent_0.1"
 
+gymnasium_lavatrail8_imitationlatent_1:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    teacher_to_student_imitation: true
+    student_to_teacher_lambda: 1
+    teacher_to_student_lambda: 1
+  exp_name: "lavatrail8_imitationlatent_1"
+
+gymnasium_lavatrail8_imitationlatent_10:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    teacher_to_student_imitation: true
+    student_to_teacher_lambda: 10
+    teacher_to_student_lambda: 10
+
+# Blind Pick
 gymnasium_blindpick: &gymnasium_blindpick
   task: gymnasium_FOFixedGripper2DBlind7cmPick-v0
   total_timesteps: 200000

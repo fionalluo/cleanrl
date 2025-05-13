@@ -71,10 +71,10 @@ def load_config(argv=None):
 
     return config
 
-def make_envs(config):
+def make_envs(config, num_envs):
     suite, task = config.task.split('_', 1)
     ctors = []
-    for index in range(config.num_envs):
+    for index in range(num_envs):
         ctor = lambda: make_env(config)
         if hasattr(config, 'envs') and hasattr(config.envs, 'parallel') and config.envs.parallel != 'none':
             ctor = bind(embodied.Parallel, ctor, config.envs.parallel)
@@ -305,8 +305,8 @@ def main(argv=None):
     torch.backends.cudnn.deterministic = config.torch_deterministic
 
     # Create environment
-    env = make_env(config)
-    envs = make_envs(config)
+    # env = make_env(config, num_envs=config.num_envs)
+    envs = make_envs(config, num_envs=config.num_envs)
 
     # Initialize components
     device = torch.device("cuda" if torch.cuda.is_available() and config.cuda else "cpu")
@@ -429,7 +429,7 @@ def main(argv=None):
     next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
     
     # Create evaluation environments
-    eval_envs = make_envs(config)
+    eval_envs = make_envs(config, num_envs=config.eval.eval_envs)
     eval_envs.num_envs = config.eval.eval_envs
     
     # Initialize evaluation metrics

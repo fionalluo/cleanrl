@@ -12,11 +12,28 @@ BASE_LOGDIR=~/logdir_teacher_student
 CONFIGS=(
   # "cartpole_small"
   # "gymnasium_bandit5"
-  "gymnasium_lavatrail8"
+  # "gymnasium_lavatrail8"
   # "gymnasium_blindpick"
   # "gymnasium_lavatrail8_imitationlatent"
   # "gymnasium_lavatrail8_studentteacherlatent"
   # "gymnasium_lavatrail8_teacherstudentlatent"
+
+  # "gymnasium_lavatrail8_imitationlatent_0.1"
+  # "gymnasium_lavatrail8_imitationlatent_1"
+  # "gymnasium_lavatrail8_imitationlatent_10"
+
+  # "gymnasium_lavatrail8_studentteacherlatent_0.1"
+  # "gymnasium_lavatrail8_studentteacherlatent_1"
+  # "gymnasium_lavatrail8_studentteacherlatent_10"
+
+  # "gymnasium_lavatrail8_teacherstudentlatent_0.1"
+  # "gymnasium_lavatrail8_teacherstudentlatent_1"
+  # "gymnasium_lavatrail8_teacherstudentlatent_10"
+  # "gymnasium_lavatrail8_teacherstudentlatent_1"
+  # "gymnasium_lavatrail8_teacherstudentlatent_2"
+  # "gymnasium_lavatrail8_teacherstudentlatent_4"
+
+  "gymnasium_lavatrail8_unprivileged"
 )
 
 NUM_SEEDS=1
