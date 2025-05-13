@@ -232,6 +232,24 @@ gymnasium_lavatrail8_imitationlatent_1:
     teacher_to_student_lambda: 1
   exp_name: "lavatrail8_imitationlatent_1"
 
+gymnasium_lavatrail8_imitationlatent_2:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    teacher_to_student_imitation: true
+    student_to_teacher_lambda: 2
+    teacher_to_student_lambda: 2
+  exp_name: "lavatrail8_imitationlatent_2"
+
+gymnasium_lavatrail8_imitationlatent_4:
+  <<: *gymnasium_lavatrail8
+  encoder:
+    student_to_teacher_imitation: true
+    teacher_to_student_imitation: true
+    student_to_teacher_lambda: 4
+    teacher_to_student_lambda: 4
+  exp_name: "lavatrail8_imitationlatent_4"
+
 gymnasium_lavatrail8_imitationlatent_10:
   <<: *gymnasium_lavatrail8
   encoder:

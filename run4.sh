@@ -10,13 +10,35 @@ BASE_LOGDIR=~/logdir_teacher_student
 
 # List of configurations (customize as needed)
 CONFIGS=(
-  "gymnasium_lavatrail8_unprivileged"
-  # Add more if needed, e.g.:
+  # "gymnasium_lavatrail8"
+  # "gymnasium_blindpick"
+  # "gymnasium_lavatrail8_imitationlatent"
+  # "gymnasium_lavatrail8_studentteacherlatent"
+  # "gymnasium_lavatrail8_teacherstudentlatent"
+
+  # "gymnasium_lavatrail8_imitationlatent_0.1"
+  # "gymnasium_lavatrail8_imitationlatent_1"
+  "gymnasium_lavatrail8_imitationlatent_2"
+  "gymnasium_lavatrail8_imitationlatent_4"
+  # "gymnasium_lavatrail8_imitationlatent_10"
+
+  # "gymnasium_lavatrail8_studentteacherlatent_0.1"
+  # "gymnasium_lavatrail8_studentteacherlatent_1"
+  # "gymnasium_lavatrail8_studentteacherlatent_2"
+  # "gymnasium_lavatrail8_studentteacherlatent_4"
+  # "gymnasium_lavatrail8_studentteacherlatent_10"
+
+  # "gymnasium_lavatrail8_teacherstudentlatent_0.1"
   # "gymnasium_lavatrail8_teacherstudentlatent_1"
+  # "gymnasium_lavatrail8_teacherstudentlatent_2"
+  "gymnasium_lavatrail8_teacherstudentlatent_4"
+  "gymnasium_lavatrail8_teacherstudentlatent_10"
+
+  # "gymnasium_lavatrail8_unprivileged"
 )
 
 # Number of seeds to generate per config
-NUM_SEEDS=2
+NUM_SEEDS=1
 
 # Generate the initial unique seed
 INITIAL_SEED=$(generate_unique_seed)

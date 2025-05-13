@@ -31,12 +31,12 @@ CONFIGS=(
   # "gymnasium_lavatrail8_teacherstudentlatent_10"
   # "gymnasium_lavatrail8_teacherstudentlatent_1"
   # "gymnasium_lavatrail8_teacherstudentlatent_2"
-  # "gymnasium_lavatrail8_teacherstudentlatent_4"
+  "gymnasium_lavatrail8_teacherstudentlatent_4"
 
-  "gymnasium_lavatrail8_unprivileged"
+  # "gymnasium_lavatrail8_unprivileged"
 )
 
-NUM_SEEDS=1
+NUM_SEEDS=
 INITIAL_SEED=$(generate_unique_seed)
 
 SEEDS=()
