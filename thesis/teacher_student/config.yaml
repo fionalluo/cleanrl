@@ -112,11 +112,11 @@ gymnasium_bandit5:
 
 gymnasium_lavatrail8: &gymnasium_lavatrail8
   task: gymnasium_LavaTrail8x8-v0
-  total_timesteps: 200000  # Doubled from 40000 to allow much more exploration time
-  num_envs: 16  # Doubled from 8 to 16 for even more parallel exploration
-  num_steps: 512  # Doubled from 256 to collect more experience per update
-  learning_rate: 5e-5  # Further reduced for more stable learning during exploration
-  ent_coef: 0.1  # Doubled from 0.05 to encourage even more random actions
+  total_timesteps: 100000  # Doubled from 40000 to allow much more exploration time
+  num_envs: 8  # Doubled from 8 to 16 for even more parallel exploration
+  num_steps: 256  # Doubled from 256 to collect more experience per update
+  learning_rate: 1e-4  # Further reduced for more stable learning during exploration
+  ent_coef: 0.05  # Doubled from 0.05 to encourage even more random actions
   gamma: 0.99
   gae_lambda: 0.95
   num_minibatches: 8  # Increased to handle larger batch size
@@ -126,7 +126,7 @@ gymnasium_lavatrail8: &gymnasium_lavatrail8
   clip_vloss: true
   vf_coef: 0.5
   max_grad_norm: 0.5
-  target_kl: 0.01  # Slightly reduced to allow more policy updates
+  # target_kl: 0.01  # Slightly reduced to allow more policy updates
   eval:
     eval_interval: 100
     num_eval_episodes: 10

@@ -102,7 +102,6 @@ class BehavioralCloning:
         obs = {}
         for key in transitions[0]['obs'].keys():
             obs[key] = torch.tensor(np.stack([t['obs'][key] for t in transitions]), device=self.device)
-        actions = torch.tensor(np.stack([t['action'] for t in transitions]), device=self.device)
         
         # Get teacher actions
         with torch.no_grad():
@@ -116,37 +115,42 @@ class BehavioralCloning:
             # Shuffle data
             indices = torch.randperm(len(transitions))
             obs_shuffled = {k: v[indices] for k, v in obs.items()}
-            actions_shuffled = actions[indices]
             teacher_actions_shuffled = teacher_actions[indices]
             
             # Train in batches
             for i in range(0, len(transitions), self.batch_size):
                 batch_obs = {k: v[i:i+self.batch_size] for k, v in obs_shuffled.items()}
-                batch_actions = actions_shuffled[i:i+self.batch_size]
                 batch_teacher_actions = teacher_actions_shuffled[i:i+self.batch_size]
                 
-                # Convert raw action indices to one-hot for discrete actions
-                if self.student.is_discrete:
-                    batch_actions = F.one_hot(batch_actions.long(), num_classes=self.student.actor[-1].out_features)
-                
-                # Forward pass
-                student_actions, log_probs, entropy, value, imitation_losses = self.student.get_action_and_value(batch_obs, batch_actions)
+                # Get student's action predictions
+                student_actions, student_log_probs, _, _, _ = self.student.get_action_and_value(batch_obs)
                 
                 # Compute loss
                 if self.student.is_discrete:
                     # For discrete actions, use cross entropy loss
-                    loss = -log_probs.mean()
+                    teacher_action_indices = batch_teacher_actions.argmax(dim=1)
+                    student_logits = self.student.actor(self.student.encode_observations(batch_obs))
+                    loss = nn.CrossEntropyLoss()(student_logits, teacher_action_indices)
                 else:
                     # For continuous actions, use MSE loss
-                    loss = F.mse_loss(student_actions, batch_actions)
+                    loss = F.mse_loss(student_actions, batch_teacher_actions)
                 
                 # Add imitation loss if enabled
                 if self.config.encoder.student_to_teacher_imitation and self.config.encoder.student_to_teacher_lambda > 0:
-                    loss = loss + self.config.encoder.student_to_teacher_lambda * imitation_losses['student_to_teacher']
+                    # Get teacher's latent representation with stop gradient
+                    with torch.no_grad():
+                        teacher_latent = self.dual_encoder.encode_teacher_observations(batch_obs)
+                    # Get student's latent representation
+                    student_latent = self.student.encode_observations(batch_obs)
+                    # Compute imitation loss
+                    imitation_loss = self.dual_encoder.compute_student_to_teacher_loss(teacher_latent, student_latent)
+                    loss = loss + self.config.encoder.student_to_teacher_lambda * imitation_loss
                 
                 # Backward pass
                 self.optimizer.zero_grad()
                 loss.backward()
+                if self.config.bc.max_grad_norm is not None:
+                    nn.utils.clip_grad_norm_(self.student.parameters(), self.config.bc.max_grad_norm)
                 self.optimizer.step()
                 
                 total_loss += loss.item()
