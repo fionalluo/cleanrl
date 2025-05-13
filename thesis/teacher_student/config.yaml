@@ -4,7 +4,7 @@ defaults:
   torch_deterministic: true
   cuda: true
   track: true
-  wandb_project_name: "cleanrl-ppo"
+  wandb_project_name: "cleanrl-latent"
   wandb_entity: 'fionalluo'
   capture_video: false
 

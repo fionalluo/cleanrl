@@ -139,11 +139,11 @@ class BehavioralCloning:
                 if self.config.encoder.student_to_teacher_imitation and self.config.encoder.student_to_teacher_lambda > 0:
                     # Get teacher's latent representation with stop gradient
                     with torch.no_grad():
-                        teacher_latent = self.dual_encoder.encode_teacher_observations(batch_obs)
+                        teacher_latent = self.student.dual_encoder.encode_teacher_observations(batch_obs)
                     # Get student's latent representation
                     student_latent = self.student.encode_observations(batch_obs)
                     # Compute imitation loss
-                    imitation_loss = self.dual_encoder.compute_student_to_teacher_loss(teacher_latent, student_latent)
+                    imitation_loss = self.student.dual_encoder.compute_student_to_teacher_loss(teacher_latent, student_latent)
                     loss = loss + self.config.encoder.student_to_teacher_lambda * imitation_loss
                 
                 # Backward pass
