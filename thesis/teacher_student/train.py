@@ -110,9 +110,9 @@ def make_env(config, **overrides):
     kwargs = getattr(config.env, suite, {})
     kwargs.update(overrides)
     if suite == 'robopianist':
-        kwargs.update({
-        'record': config.run.script == 'eval_only'  # record in eval only for now (single environment)
-        })
+        # kwargs.update({
+        # 'record': config.run.script == 'eval_only'  # record in eval only for now (single environment)
+        # })
         render_image = False
         if 'Pixel' in task:
             task = task.replace('Pixel', '')
@@ -224,8 +224,14 @@ def evaluate_policy(policy, envs, device, config, log_video=False):
     
     # Get initial observations
     obs_dict = envs.step(acts)
+    next_obs = {}
+    print("Available observation keys:", obs_dict.keys())
+    print("Requested keys:", all_keys)
     for key in all_keys:
-        obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
+        if key not in obs_dict:
+            print(f"Warning: Key '{key}' not found in observation dictionary")
+            continue
+        next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
     next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
     
     # Track episode returns and lengths for each environment
@@ -425,6 +431,9 @@ def main(argv=None):
     obs_dict = envs.step(acts)
     next_obs = {}
     for key in all_keys:
+        if key not in obs_dict:
+            print(f"Warning: Key '{key}' not found in observation dictionary")
+            continue
         next_obs[key] = torch.Tensor(obs_dict[key].astype(np.float32)).to(device)
     next_done = torch.Tensor(obs_dict['is_last'].astype(np.float32)).to(device)
     

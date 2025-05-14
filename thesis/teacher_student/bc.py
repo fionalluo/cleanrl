@@ -133,6 +133,8 @@ class BehavioralCloning:
                     loss = nn.CrossEntropyLoss()(student_logits, teacher_action_indices)
                 else:
                     # For continuous actions, use MSE loss
+                    # Ensure student actions have gradients enabled
+                    student_actions = self.student.actor_mean(self.student.encode_observations(batch_obs))
                     loss = F.mse_loss(student_actions, batch_teacher_actions)
                 
                 # Add imitation loss if enabled
